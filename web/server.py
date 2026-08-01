@@ -16,6 +16,7 @@ Run:  python run.py web   (or)   python web/server.py
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sys
@@ -150,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_file(self, path: Path, ctype: str):
+    def _send_file(self, path: Path, ctype: str, cookie: str | None = None):
         if not path.exists():
             self._json({"error": "not found"}, 404)
             return
@@ -158,17 +159,46 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
+    # --- auth --------------------------------------------------------------
+    def _authed(self) -> bool:
+        """True if the request is authorized. When config.WEB_TOKEN is unset,
+        auth is disabled (single-user localhost dev mode). Otherwise the token
+        must arrive via Authorization: Bearer, ?token=, or the argus_token cookie."""
+        token = config.WEB_TOKEN
+        if not token:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], token):
+            return True
+        q = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        if q and hmac.compare_digest(q, token):
+            return True
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            part = part.strip()
+            if part.startswith("argus_token=") and hmac.compare_digest(part[12:], token):
+                return True
+        return False
+
     # --- GET ---------------------------------------------------------------
     def do_GET(self):
+        if not self._authed():
+            return self._json({"error": "unauthorized — append ?token=<ARGUS_WEB_TOKEN>"}, 401)
         parsed = urlparse(self.path)
         route = parsed.path
         qs = parse_qs(parsed.query)
 
         if route == "/" or route == "/index.html":
-            return self._send_file(STATIC / "index.html", "text/html; charset=utf-8")
+            # On the first authed visit (?token=…), drop a cookie so subsequent
+            # API/SSE calls authenticate without the token in every URL.
+            cookie = None
+            if config.WEB_TOKEN and qs.get("token", [""])[0]:
+                cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
+            return self._send_file(STATIC / "index.html", "text/html; charset=utf-8", cookie=cookie)
         if route == "/api/stats":
             return self._stats()
         if route == "/api/targets":
@@ -195,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- POST --------------------------------------------------------------
     def do_POST(self):
+        if not self._authed():
+            return self._json({"error": "unauthorized"}, 401)
         parsed = urlparse(self.path)
         if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop"):
             length = int(self.headers.get("Content-Length", 0))
@@ -633,11 +665,30 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
 
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
+
+
+def _guard_binding(host: str) -> None:
+    """Fail closed: never expose the agent (which runs commands) on a network
+    address without a token. Localhost stays open for single-user dev use."""
+    if host not in _LOCAL_HOSTS and not config.WEB_TOKEN:
+        raise SystemExit(
+            f"REFUSING to bind to {host!r} without ARGUS_WEB_TOKEN set.\n"
+            "The web agent can run shell commands and detonate samples, so an\n"
+            "unauthenticated network endpoint is a remote-code-execution service.\n"
+            "Fix: set ARGUS_WEB_TOKEN=<a long secret>, or bind to 127.0.0.1 and\n"
+            "reach it over an SSH tunnel / Tailscale.")
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765):
     _load_dotenv()
+    _guard_binding(host)
     get_index()  # warm the corpus so first request is fast
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"ARGUS console -> http://{host}:{port}  (Ctrl+C to stop)")
+    auth = "TOKEN AUTH ON" if config.WEB_TOKEN else ("open (localhost only)" if host in _LOCAL_HOSTS else "OPEN — no token!")
+    print(f"ARGUS console -> http://{host}:{port}  [{auth}]  (Ctrl+C to stop)")
+    if config.WEB_TOKEN:
+        print(f"  open with:  http://{host}:{port}/?token=<your ARGUS_WEB_TOKEN>")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -652,9 +703,11 @@ def create_server(host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPSer
     Used by the desktop tray app for start/stop control.
     """
     _load_dotenv()
+    _guard_binding(host)
     get_index()
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"ARGUS console -> http://{host}:{port}")
+    print(f"ARGUS console -> http://{host}:{port}"
+          + ("  [TOKEN AUTH ON]" if config.WEB_TOKEN else ""))
     return httpd
 
 

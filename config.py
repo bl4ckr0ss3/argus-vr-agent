@@ -256,3 +256,11 @@ GOODWARE_DIR = Path(os.environ.get("ARGUS_GOODWARE", str(ROOT / "goodware")))
 # --- VirusTotal (hash lookups only — ARGUS never uploads samples) ----------
 VT_API_KEY = os.environ.get("VT_API_KEY", os.environ.get("VIRUSTOTAL_API_KEY", ""))
 VT_API = os.environ.get("VT_API", "https://www.virustotal.com/api/v3")
+
+# --- Web console auth ------------------------------------------------------
+# If set, EVERY web request must carry this token (Authorization: Bearer <t>,
+# ?token=<t>, or the cookie set on first authed visit). This is REQUIRED to bind
+# the console to any non-localhost address: the agent can run shell commands and
+# detonate samples, so an unauthenticated network endpoint is effectively a
+# remote-code-execution service. Localhost with no token = single-user dev mode.
+WEB_TOKEN = os.environ.get("ARGUS_WEB_TOKEN", "").strip()
