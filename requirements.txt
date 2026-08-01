@@ -12,3 +12,6 @@ python-dotenv>=1.0.0
 # pip install pystray pillow
 # Then:  python argus_tray.py    or   pythonw argus_tray.py  (no console)
 
+
+# AES-encrypted sample archives (MalwareBazaar etc.)
+pyzipper>=0.3
