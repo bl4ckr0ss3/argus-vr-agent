@@ -30,6 +30,18 @@ def test_detonation_blocked_by_keys(monkeypatch):
     assert cred["status"] == "fail"
 
 
+def test_detonation_not_ready_while_online(monkeypatch):
+    # prereqs met (procmon, no keys) BUT online -> detonation must NOT be ready
+    _patch(monkeypatch,
+           tools={"procmon": r"C:\T\procmon.exe", "tshark": r"C:\W\tshark.exe", "fakenet": None, "yara_cli": None},
+           net={"dns": True, "tcp": True, "fakenet": False, "reachable": True},
+           creds={"llm_keys": [], "malwarebazaar": True, "virustotal": False})
+    r = doc.assess()
+    assert r["readiness"]["detonation"] is False          # online = unsafe
+    assert r["readiness"]["detonation_prereqs"] is True    # tools/keys were fine
+    assert r["readiness"]["isolated"] is False
+
+
 def test_collection_ready_online(monkeypatch):
     _patch(monkeypatch,
            tools={"procmon": None, "tshark": None, "fakenet": None, "yara_cli": None},

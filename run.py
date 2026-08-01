@@ -409,8 +409,13 @@ def cmd_doctor(_args) -> None:
     rd = r["readiness"]
     print("=" * 48)
     print(f"  network mode : {rd['mode']}")
-    print(f"  DETONATION   : {'READY' if rd['detonation'] else 'NOT READY'} "
-          "(needs procmon on PATH + no LLM keys)")
+    if rd["detonation"]:
+        det = "READY (isolated)"
+    elif rd.get("detonation_prereqs") and not rd.get("isolated", True):
+        det = "!! DO NOT DETONATE — ONLINE. Switch to Host-only first (malware would beacon/exfiltrate)"
+    else:
+        det = "NOT READY (needs procmon on PATH + no LLM keys)"
+    print(f"  DETONATION   : {det}")
     print(f"  COLLECTION   : {'READY' if rd['collection'] else 'NOT READY'} "
           "(needs internet + MALWAREBAZAAR_API_KEY)")
     if not rd["detonation"] and not rd["collection"]:

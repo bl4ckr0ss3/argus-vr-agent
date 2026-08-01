@@ -121,8 +121,15 @@ def assess() -> dict:
     checks.append(_c("malwarebazaar key", OK if creds["malwarebazaar"] else WARN,
                      "set" if creds["malwarebazaar"] else "unset — `fetch` needs MALWAREBAZAAR_API_KEY"))
 
+    # Detonation is only SAFE-ready when isolated. FakeNet counts as isolated
+    # (simulated network, nothing leaves the box); a reachable real internet does
+    # NOT — running live malware online lets it beacon/exfiltrate/spread.
+    isolated = not net["reachable"]           # reachable == real internet up
+    prereqs = bool(tools["procmon"]) and not creds["llm_keys"]
     readiness = {
-        "detonation": bool(tools["procmon"]) and not creds["llm_keys"],
+        "detonation": prereqs and isolated,
+        "detonation_prereqs": prereqs,
+        "isolated": isolated,
         "collection": net["reachable"] and creds["malwarebazaar"],
         "mode": mode,
     }
