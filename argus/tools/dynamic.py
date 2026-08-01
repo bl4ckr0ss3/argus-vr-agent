@@ -559,6 +559,22 @@ def analyze_detonation(out_dir: Path, static: dict, exec_result: dict) -> dict:
     }
 
 
+def write_intel_bundle(out_dir: Path, struct: dict, static: dict | None = None) -> dict | None:
+    """Auto-generate the shareable detection bundle for a run: iocs.json, iocs.csv
+    (defanged), and sigma.yml. Returns {ioc_count, sigma_count} or None on failure."""
+    try:
+        from .. import ioc as _ioc, sigma_gen as _sigma
+        iocs = _ioc.extract_from(struct, static)
+        (out_dir / "iocs.json").write_text(json.dumps(iocs, indent=2), encoding="utf-8")
+        (out_dir / "iocs.csv").write_text(_ioc.to_csv(iocs, do_defang=True), encoding="utf-8")
+        sig = _sigma.generate(struct)
+        if sig["count"]:
+            (out_dir / "sigma.yml").write_text(sig["text"], encoding="utf-8")
+        return {"ioc_count": sum(len(v) for v in iocs.values()), "sigma_count": sig["count"]}
+    except Exception:
+        return None
+
+
 def _format_findings(s: dict) -> list[str]:
     """Render analyze_detonation() output as the human-facing KEY FINDINGS block."""
     lines = ["", "===== KEY FINDINGS (auto) ====="]
@@ -855,6 +871,13 @@ def run_detonation(sample, timeout: int = _MAX_EXECUTION_SECONDS, on_progress=No
         (out_dir / "findings.json").write_text(json.dumps(struct, indent=2), encoding="utf-8")
     except OSError:
         pass
+
+    # Auto-produce the full intel bundle (IOCs + Sigma) so every run is a
+    # complete, shareable detection package — no manual `ioc`/`sigma` needed.
+    bundle = write_intel_bundle(out_dir, struct, static)
+    if bundle:
+        emit(f"  intel bundle: {bundle['ioc_count']} IOC(s), {bundle['sigma_count']} "
+             f"Sigma rule(s) -> iocs.json/csv" + (", sigma.yml" if bundle["sigma_count"] else ""))
 
     report = _generate_behavioral_report(sha, out_dir, static, exec_result, findings)
     emit("")
