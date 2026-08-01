@@ -70,12 +70,35 @@ def _save_seen(seen: dict) -> None:
     tmp.replace(_SEEN_FILE)
 
 
+def _is_pe(p: Path) -> bool:
+    try:
+        with open(p, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
 def _iter_queue(queue_dir: Path):
-    """Yield candidate sample files in the queue directory (non-recursive)."""
+    """Yield detonatable sample files in the queue (non-recursive).
+
+    A `.zip` (MalwareBazaar / sample feeds ship AES-encrypted zips, password
+    'infected') is unpacked automatically and its PE members are yielded, so
+    `fetch -> autohunt` works end-to-end with no manual extraction."""
     if not queue_dir.exists():
         return
     for p in sorted(queue_dir.iterdir()):
-        if p.is_file() and p.suffix.lower() in _SAMPLE_EXTS:
+        if not p.is_file():
+            continue
+        if p.suffix.lower() == ".zip":
+            try:
+                from .tools.malware import unpack_archive
+                extracted, _meta = unpack_archive(p)
+            except Exception:
+                continue
+            for ex in extracted:
+                if _is_pe(ex) or ex.suffix.lower() in _SAMPLE_EXTS:
+                    yield ex
+        elif p.suffix.lower() in _SAMPLE_EXTS:
             yield p
 
 
