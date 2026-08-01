@@ -293,6 +293,24 @@ def cmd_bootscan(args) -> None:
     print("Use --baseline (before), then --compare (after reboot). --show prints the baseline.")
 
 
+def cmd_sigma(args) -> None:
+    """Generate Sigma behavioral detection rules from a detonation run."""
+    _try_dotenv()
+    from argus import sigma_gen
+    r = sigma_gen.generate_run(args.run)
+    if r.get("error"):
+        print(r["error"]); return
+    if r["count"] == 0:
+        print("No behavioral signals to turn into Sigma rules (benign/quiet run)."); return
+    print(r["text"])
+    if args.save:
+        out = Path(args.run) / "sigma.yml"
+        out.write_text(r["text"], encoding="utf-8")
+        print(f"\n[{r['count']} rule(s) -> {out}]")
+    else:
+        print(f"\n({r['count']} rule(s); add --save to write sigma.yml)")
+
+
 def cmd_ioc(args) -> None:
     """Extract shareable IOCs from a detonation run."""
     _try_dotenv()
@@ -705,6 +723,11 @@ def main() -> None:
     pdf.set_defaults(func=cmd_diff)
 
     sub.add_parser("doctor", help="preflight: check VM readiness + network mode").set_defaults(func=cmd_doctor)
+
+    psg = sub.add_parser("sigma", help="generate Sigma behavioral detection rules from a run")
+    psg.add_argument("run", help="a runs/dynamic/<...> folder")
+    psg.add_argument("--save", action="store_true", help="write sigma.yml into the run folder")
+    psg.set_defaults(func=cmd_sigma)
 
     pio = sub.add_parser("ioc", help="extract shareable IOCs (hashes/IPs/domains/files) from a run")
     pio.add_argument("run", help="a runs/dynamic/<...> folder")
