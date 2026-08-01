@@ -17,7 +17,11 @@ CORPUS_FILE = DATASET_DIR / "corpus.jsonl"
 EXEMPLARS_FILE = DATASET_DIR / "exemplars.jsonl"
 BENCHMARK_FILE = DATASET_DIR / "benchmark.jsonl"
 INDEX_FILE = DATASET_DIR / "bm25_index.json"
-RUNS_DIR = ROOT / "runs"
+# Where detonation results + the review queue are written. Override with
+# ARGUS_RUNS to point at a persistent location (e.g. a VMware shared folder on
+# the host) so results survive a VM snapshot revert. Pair with ARGUS_STATE for
+# the XP ledger / seen-set.
+RUNS_DIR = Path(os.environ.get("ARGUS_RUNS", str(ROOT / "runs")))
 PROGRESSION_FILE = ROOT / "progression.json"
 STATE_DIR = Path(os.environ.get("ARGUS_STATE", str(ROOT / "state")))
 # The hunter progression / level-up state (XP, ranks, bug ledger, achievements).
