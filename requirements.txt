@@ -1,0 +1,14 @@
+# ARGUS v1 — deliberately minimal.
+# The RAG retriever (BM25) is pure Python. The OpenAI-compatible LLM path
+# (DeepSeek/OpenAI/local) is pure stdlib HTTP. Only the Anthropic SDK is a
+# hard dependency for the agent loop with Claude.
+anthropic>=0.40.0
+
+# Optional, only if you want to load ANTHROPIC_API_KEY from a .env file
+# instead of exporting it in the shell:
+python-dotenv>=1.0.0
+
+# --- optional: desktop tray icon (Windows / macOS / Linux) ---
+# pip install pystray pillow
+# Then:  python argus_tray.py    or   pythonw argus_tray.py  (no console)
+

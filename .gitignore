@@ -1,0 +1,63 @@
+# secrets
+.env
+
+# python
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# generated dataset artifacts (rebuild with: python run.py index)
+dataset/corpus.jsonl
+dataset/corpus/
+dataset/bm25_index.json
+
+# agent run transcripts
+runs/
+progression.json
+
+# hunter progression state (contains real target / finding names in the ledger)
+state/
+
+# LIVE MALWARE — never commit
+quarantine/
+/intake/*
+!/intake/README.md
+/intel/
+
+# staged YARA rules — auto-generated candidates + fetched community rulesets
+# (only curated/promoted rules belong in the tracked top-level rules/)
+rules/generated/
+rules/community/
+
+# goodware corpus for the rule quality gate (may hold copyrighted binaries)
+goodware/
+
+# selftest ground truth — samples/dumps are malware or large images; the user's
+# own manifest may reference local paths. Keep only the example + README tracked.
+validation/manifest.json
+validation/samples/
+validation/images/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# venv
+venv/
+.venv/
+env/
+
+# generated assets
+assets/

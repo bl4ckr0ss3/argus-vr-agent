@@ -1,0 +1,41 @@
+{
+  "_comment": "Copy to validation/manifest.json and edit. Paths are relative to this file. See validation/README.md.",
+  "cases": [
+    {
+      "name": "eicar-is-not-suspicious",
+      "type": "static",
+      "file": "samples/eicar.com",
+      "expect": { "yara_any": false, "packed": false }
+    },
+    {
+      "name": "clean-system-binary-benign",
+      "type": "static",
+      "file": "C:\\Windows\\System32\\notepad.exe",
+      "expect": { "yara_any": false, "packed": false }
+    },
+    {
+      "name": "known-packed-sample-detected",
+      "type": "static",
+      "file": "samples/packed_upx.bin",
+      "expect": { "packed": true }
+    },
+    {
+      "name": "your-yara-rule-fires-on-its-family",
+      "type": "static",
+      "file": "samples/family_a.bin",
+      "expect": { "yara_rule": "ARGUS_family_a" }
+    },
+    {
+      "name": "known-rootkit-memory-image",
+      "type": "memscan",
+      "dump": "images/known_rootkit.vmem",
+      "expect": { "hidden_process": true, "severity": "CRITICAL" }
+    },
+    {
+      "name": "hyper-grid-run-was-benign",
+      "type": "findings",
+      "path": "../runs/dynamic/353aa8b55907bda1_20260731-184850",
+      "expect": { "verdict_not": "suspicious" }
+    }
+  ]
+}

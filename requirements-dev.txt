@@ -1,0 +1,4 @@
+# Dev/test dependencies (the runtime is stdlib-only where it can be).
+#   pip install -r requirements-dev.txt
+#   python -m pytest tests/ -q
+pytest>=7.0
