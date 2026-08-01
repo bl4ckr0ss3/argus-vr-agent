@@ -209,6 +209,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._workflow_status()
         if route == "/api/devroom":
             return self._devroom()
+        if route == "/api/jobs":
+            from argus import jobs
+            return self._json({"types": jobs.job_types(), "jobs": jobs.list_jobs()})
+        if route == "/api/job":
+            from argus import jobs
+            j = jobs.get(qs.get("id", [""])[0])
+            return self._json(j or {"error": "no such job"}, 200 if j else 404)
         if route == "/api/runs":
             return self._runs()
         if route == "/api/run":
@@ -228,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json({"error": "unauthorized"}, 401)
         parsed = urlparse(self.path)
-        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop"):
+        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs"):
             length = int(self.headers.get("Content-Length", 0))
             if length > config.MAX_UPLOAD_BYTES + 2_000_000:
                 return self._json({"error": "payload too large"}, 413)
@@ -236,6 +243,9 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
                 return self._json({"error": "bad json"}, 400)
+            if parsed.path == "/api/jobs":
+                from argus import jobs
+                return self._json(jobs.submit(payload.get("type", ""), payload.get("params", {})))
             if parsed.path == "/api/retrieve":
                 return self._retrieve(payload)
             if parsed.path == "/api/upload":
@@ -683,6 +693,8 @@ def _guard_binding(host: str) -> None:
 def serve(host: str = "127.0.0.1", port: int = 8765):
     _load_dotenv()
     _guard_binding(host)
+    from argus import jobs
+    jobs.load_all()  # restore persisted research jobs (survive restarts)
     get_index()  # warm the corpus so first request is fast
     httpd = ThreadingHTTPServer((host, port), Handler)
     auth = "TOKEN AUTH ON" if config.WEB_TOKEN else ("open (localhost only)" if host in _LOCAL_HOSTS else "OPEN — no token!")

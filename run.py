@@ -358,6 +358,45 @@ def cmd_selftest(args) -> None:
         sys.exit(1)
 
 
+def cmd_jobs(args) -> None:
+    """Submit / list / inspect background research jobs (the web console's engine)."""
+    _try_dotenv()
+    from argus import jobs
+    jobs.load_all()
+
+    if args.list:
+        rows = jobs.list_jobs()
+        if not rows:
+            print("no jobs. Submit one: python run.py jobs --submit retrieve --param query=\"...\"")
+            return
+        for j in rows:
+            print(f"  {j['id']}  {j['type']:<10} {j['status']:<11} {j['created']}")
+        return
+    if args.get:
+        j = jobs.get(args.get)
+        print(json.dumps(j, indent=2)[:4000] if j else "no such job")
+        return
+    if args.submit:
+        params = {}
+        for kv in (args.param or []):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                params[k] = v
+        r = jobs.submit(args.submit, params)
+        if r.get("error"):
+            print(r["error"]); return
+        print(f"submitted {args.submit} job {r['id']} — waiting (up to {args.timeout}s)...")
+        j = jobs.wait(r["id"], timeout=args.timeout)
+        print(f"status: {j['status']}")
+        if j.get("result"):
+            print(json.dumps(j["result"], indent=2)[:2000])
+        if j.get("error"):
+            print("error:", j["error"])
+        return
+    print(f"types: {', '.join(jobs.job_types())}")
+    print("usage: --submit <type> [--param k=v ...] | --list | --get <id>")
+
+
 def cmd_doctor(_args) -> None:
     """Preflight: is this VM correctly configured, and in which mode?"""
     _try_dotenv()
@@ -721,6 +760,14 @@ def main() -> None:
     pdf.add_argument("run_b", help="sinkholed run dir (C2 dead)")
     pdf.add_argument("--out", default=None, help="write malicious_diff.md to this dir")
     pdf.set_defaults(func=cmd_diff)
+
+    pj = sub.add_parser("jobs", help="submit/list background research jobs (web console engine)")
+    pj.add_argument("--submit", metavar="TYPE", help="submit a job: retrieve|hunt|ask|ioc|sigma|enrich")
+    pj.add_argument("--param", action="append", metavar="K=V", help="job parameter (repeatable)")
+    pj.add_argument("--list", action="store_true", help="list jobs")
+    pj.add_argument("--get", metavar="ID", help="show one job")
+    pj.add_argument("--timeout", type=int, default=120, help="seconds to wait for --submit")
+    pj.set_defaults(func=cmd_jobs)
 
     sub.add_parser("doctor", help="preflight: check VM readiness + network mode").set_defaults(func=cmd_doctor)
 

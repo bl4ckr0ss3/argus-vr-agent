@@ -192,7 +192,7 @@ eval/evaluate.py          score the agent vs the benchmark
 web/
   server.py               zero-dependency stdlib HTTP server + SSE streaming
   static/index.html       single-file terminal/ops-panel console
-run.py                    CLI: doctor selftest index retrieve ask hunt web triage
+run.py                    CLI: doctor jobs selftest index retrieve ask hunt web triage
                                fetch watch detonate reanalyze ioc sigma bootscan
                                memscan autohunt enrich yara rules publish progression collab
 ```
