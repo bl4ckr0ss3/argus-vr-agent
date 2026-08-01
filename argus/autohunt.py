@@ -140,8 +140,8 @@ def _draft_writeup(struct: dict) -> Path:
 
     # Markdown writeup (for LinkedIn / a blog / the disclosure record)
     md = [
-        f"# Malware Triage — {sample}",
-        f"_Draft generated {_now()} · **PENDING HUMAN REVIEW — do not publish as-is**_",
+        f"# Malware Triage - {sample}",
+        f"_Draft generated {_now()} | **PENDING HUMAN REVIEW - do not publish as-is**_",
         "",
         f"- **SHA-256:** `{sha}`",
         f"- **Heuristic verdict:** {struct.get('verdict_text','')}",
@@ -194,9 +194,9 @@ def _draft_writeup(struct: dict) -> Path:
     (draft_dir / "writeup.md").write_text("\n".join(md), encoding="utf-8")
 
     # Tweet draft (280-char budget, IOC-light, hedged language)
-    net_hint = f" · beacons {len(struct['net'])} endpoint(s)" if struct["net"] else ""
-    tweet = (f"#malware triage: {sample} (SHA256 {sha[:12]}…) shows "
-             f"{signals}{net_hint}. Dynamic analysis via ARGUS. Details ⬇️  "
+    net_hint = f" - beacons {len(struct['net'])} endpoint(s)" if struct["net"] else ""
+    tweet = (f"#malware triage: {sample} (SHA256 {sha[:12]}...) shows "
+             f"{signals}{net_hint}. Dynamic analysis via ARGUS. "
              f"#threatintel #DFIR")
     (draft_dir / "tweet.txt").write_text(tweet[:280], encoding="utf-8")
 
