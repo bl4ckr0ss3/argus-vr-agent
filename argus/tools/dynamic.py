@@ -511,6 +511,11 @@ def analyze_detonation(out_dir: Path, static: dict, exec_result: dict) -> dict:
     packed = isinstance(entropy, (int, float)) and entropy >= 7.2
     procmon_parsed = pm["csv"] is not None
     yara_hits = [str(r) for r in (static.get("yara") or [])]
+    try:
+        from .. import packer as _packer
+        packer_info = _packer.identify(static)
+    except Exception:
+        packer_info = {"packer": None, "confidence": None, "indicators": []}
 
     signals = []
     if yara_hits:
@@ -548,7 +553,7 @@ def analyze_detonation(out_dir: Path, static: dict, exec_result: dict) -> dict:
         "persistence": persistence, "net": pm["net"], "staged": staged,
         "staged_payloads": staged_payloads, "spawned": pm["spawned"],
         "packed": packed, "entropy": entropy, "procmon_parsed": procmon_parsed,
-        "yara": yara_hits,
+        "packer": packer_info, "yara": yara_hits,
         "reg_unreliable": reg_unreliable, "reg_raw_diff": len(reg_new),
         "sample": sample_name, "sha256": static.get("hashes", {}).get("sha256", ""),
     }
@@ -577,7 +582,14 @@ def _format_findings(s: dict) -> list[str]:
         lines.append(f"  {'!! ' if _is_payload_path(f) else '~  '}{f}")
     if s["staged"] and not s["staged_payloads"]:
         lines.append("  (all non-executable — normal temp/cache scratch, not a payload drop)")
-    lines.append(f"Packed/encrypted (entropy {s['entropy']}): {'YES' if s['packed'] else 'no'}")
+    pk = s.get("packer") or {}
+    if pk.get("packer"):
+        lines.append(f"Packed/encrypted (entropy {s['entropy']}): YES — packer: "
+                     f"{pk['packer']} ({pk.get('confidence')})")
+        for ind in pk.get("indicators", [])[:4]:
+            lines.append(f"    · {ind}")
+    else:
+        lines.append(f"Packed/encrypted (entropy {s['entropy']}): {'YES' if s['packed'] else 'no'}")
     if s.get("yara"):
         lines.append(f"YARA matches ({len(s['yara'])}): " + ", ".join(s["yara"][:8]))
     if s.get("attack"):
