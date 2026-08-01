@@ -40,7 +40,14 @@ _STOP = ("this program cannot be run in dos mode", "kernel32.dll", "user32.dll",
          "ntdll.dll", "msvcrt.dll", "advapi32.dll", "ole32.dll", "gdi32.dll",
          "getprocaddress", "loadlibrary", "microsoft", "windows", "visual c++",
          "mscoree.dll", ".text", ".data", ".rdata", ".rsrc", ".reloc",
-         "assembly", "richedit", "comctl32")
+         "assembly", "richedit", "comctl32",
+         # PKI / Authenticode certificate-chain URLs — present in ANY signed
+         # binary (legit or malicious), so they FP-match huge amounts of clean
+         # software. Never distinctive of the sample.
+         "sectigo", "globalsign", "usertrust", "digicert", "verisign", "comodo",
+         "thawte", "geotrust", "entrust", "godaddy", "certum", "ocsp", "crl.",
+         ".crl", ".crt", ".p7c", "timestamp", "cacert", "/cps", "/repository",
+         "certificate", "symantec", "amazontrust", "starfield")
 
 
 def _generated_dir() -> Path:
