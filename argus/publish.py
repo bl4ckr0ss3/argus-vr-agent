@@ -63,6 +63,30 @@ def load_draft(draft: str) -> dict:
     }
 
 
+def list_drafts() -> list[dict]:
+    """Rich review-queue listing for the Findings panel: verdict, confidence,
+    signals, the tweet draft, status, and the safety verdict per draft."""
+    out = []
+    if not REVIEW_DIR.exists():
+        return out
+    for d in sorted(REVIEW_DIR.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        info = load_draft(str(d))
+        struct = info.get("struct", {}) or {}
+        out.append({
+            "id": d.name, "status": info.get("status"),
+            "sample": struct.get("sample"), "sha256": struct.get("sha256"),
+            "verdict": struct.get("verdict"), "confidence": struct.get("confidence"),
+            "signals": struct.get("signals", []),
+            "attack": [t.get("id") for t in struct.get("attack", [])],
+            "vt": (struct.get("vt") or {}).get("summary"),
+            "tweet": info.get("tweet"),
+            "safety": safety_reason(struct),   # None = clear to publish
+        })
+    return out
+
+
 def approve(draft: str) -> dict:
     d = _resolve(draft)
     if not d.is_dir():

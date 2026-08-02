@@ -209,6 +209,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._workflow_status()
         if route == "/api/devroom":
             return self._devroom()
+        if route == "/panel" or route == "/findings":
+            cookie = None
+            if config.WEB_TOKEN and qs.get("token", [""])[0]:
+                cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
+            return self._send_file(STATIC / "findings.html", "text/html; charset=utf-8", cookie=cookie)
+        if route == "/api/publish/drafts":
+            from argus import publish
+            return self._json({"drafts": publish.list_drafts()})
         if route == "/api/jobs":
             from argus import jobs
             return self._json({"types": jobs.job_types(), "jobs": jobs.list_jobs()})
@@ -235,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json({"error": "unauthorized"}, 401)
         parsed = urlparse(self.path)
-        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs"):
+        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs", "/api/publish/approve", "/api/publish/send"):
             length = int(self.headers.get("Content-Length", 0))
             if length > config.MAX_UPLOAD_BYTES + 2_000_000:
                 return self._json({"error": "payload too large"}, 413)
@@ -243,6 +251,14 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
                 return self._json({"error": "bad json"}, 400)
+            if parsed.path == "/api/publish/approve":
+                from argus import publish
+                return self._json(publish.approve(payload.get("draft", "")))
+            if parsed.path == "/api/publish/send":
+                from argus import publish
+                return self._json(publish.publish(
+                    payload.get("draft", ""), payload.get("targets", []),
+                    confirm=bool(payload.get("confirm")), force=bool(payload.get("force"))))
             if parsed.path == "/api/jobs":
                 from argus import jobs
                 return self._json(jobs.submit(payload.get("type", ""), payload.get("params", {})))
