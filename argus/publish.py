@@ -64,24 +64,30 @@ def load_draft(draft: str) -> dict:
     }
 
 
-def list_drafts() -> list[dict]:
+def list_drafts(limit: int = 0) -> list[dict]:
     """Rich review-queue listing for the Findings panel: verdict, confidence,
-    signals, the tweet draft, status, and the safety verdict per draft."""
+    signals, the tweet draft, status, the safety verdict and a link to the
+    finding's 0xblack.dev report. Newest first; `limit` caps the count (0=all)."""
     out = []
     if not REVIEW_DIR.exists():
         return out
-    for d in sorted(REVIEW_DIR.iterdir(), reverse=True):
-        if not d.is_dir():
-            continue
+    from . import site_publish
+    dirs = sorted((d for d in REVIEW_DIR.iterdir() if d.is_dir()), reverse=True)
+    if limit and limit > 0:
+        dirs = dirs[:limit]
+    for d in dirs:
         info = load_draft(str(d))
         struct = info.get("struct", {}) or {}
+        sha = struct.get("sha256") or ""
         out.append({
             "id": d.name, "status": info.get("status"),
-            "sample": struct.get("sample"), "sha256": struct.get("sha256"),
+            "sample": struct.get("sample"), "sha256": sha,
             "verdict": struct.get("verdict"), "confidence": struct.get("confidence"),
             "signals": struct.get("signals", []),
             "attack": [t.get("id") for t in struct.get("attack", [])],
             "vt": (struct.get("vt") or {}).get("summary"),
+            "vt_url": f"https://www.virustotal.com/gui/file/{sha}" if len(sha) == 64 else None,
+            "report_url": site_publish.analysis_url(sha),  # 0xblack.dev blog page
             "tweet": info.get("tweet"),
             "safety": safety_reason(struct),   # None = clear to publish
         })
@@ -118,6 +124,24 @@ def _http_post(url: str, headers: dict, body: bytes) -> tuple[int, str]:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
         return getattr(resp, "status", 200), resp.read().decode("utf-8", "ignore")
+
+
+def _http_post_retry(url: str, headers: dict, body: bytes, tries: int = 3) -> tuple[int, str]:
+    """POST with backoff on 429 / 5xx — VT's free API is rate-limited, so a burst
+    would otherwise drop comments. Waits 15s, 30s between attempts."""
+    last = None
+    for i in range(tries):
+        try:
+            return _http_post(url, headers, body)
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code in (429, 500, 502, 503) and i < tries - 1:
+                time.sleep(15 * (i + 1))
+                continue
+            raise
+    if last:
+        raise last
+    raise RuntimeError("no attempt made")
 
 
 def _pct(s) -> str:
@@ -372,7 +396,7 @@ def post_vt_comment(struct: dict, dry_run: bool = True) -> dict:
     headers = {"x-apikey": key, "Content-Type": "application/json"}
     base = config.VT_API.rstrip("/")
     try:
-        code, resp = _http_post(f"{base}/files/{sha}/comments", headers,
+        code, resp = _http_post_retry(f"{base}/files/{sha}/comments", headers,
                                 json.dumps({"data": {"type": "comment", "attributes": {"text": text[:4000]}}}).encode())
         vmsg = ""
         if vote:
@@ -457,7 +481,7 @@ def publish(draft: str, targets: list[str], confirm: bool = False,
 # ---------------------------------------------------------------------------
 # VirusTotal's free API is rate-limited (≈4 requests/min). Space posts out so a
 # bulk run doesn't get throttled into 429s. Tunable via ARGUS_VT_THROTTLE.
-_BATCH_THROTTLE = float(os.environ.get("ARGUS_VT_THROTTLE", "16"))
+_BATCH_THROTTLE = float(os.environ.get("ARGUS_VT_THROTTLE", "8"))
 
 _batch: dict = {"running": False, "dry": True, "total": 0, "done": 0,
                 "posted": 0, "skipped": 0, "failed": 0, "results": [],

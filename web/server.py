@@ -223,7 +223,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._re_get(route, qs)
         if route == "/api/publish/drafts":
             from argus import publish
-            return self._json({"drafts": publish.list_drafts()})
+            try:
+                lim = int(qs.get("limit", ["300"])[0])
+            except ValueError:
+                lim = 300
+            return self._json({"drafts": publish.list_drafts(limit=lim)})
         if route == "/api/publish/all/status":
             from argus import publish
             return self._json(publish.batch_status())
