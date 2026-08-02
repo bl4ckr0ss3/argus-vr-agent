@@ -349,10 +349,6 @@ def build_vt_comment(struct: dict) -> str:
     L.append("")
     L.append("**Tags:**")
     L.append(" ".join(_finding_tags(struct, family)))
-    L.append("")
-    L.append("_Automated behavioural assessment — verify independently before "
-             "operational use. Sample executed in an isolated instrumented VM; "
-             "no binary uploaded._")
     return "\n".join(L)
 
 
@@ -365,15 +361,30 @@ def post_vt_comment(struct: dict, dry_run: bool = True) -> dict:
     if len(sha) != 64:
         return {"target": "vt", "skipped": True, "detail": "no sha256 to comment on"}
     text = build_vt_comment(struct)
+    # Community vote cast alongside the comment: malicious (-1) for a suspicious
+    # verdict, harmless (+1) for benign. Inconclusive casts no vote.
+    vote = {"suspicious": "malicious", "benign": "harmless"}.get(struct.get("verdict"))
     if dry_run:
-        return {"target": "vt", "ok": True, "dry_run": True,
-                "detail": f"would comment on {sha[:12]} ({len(text)} chars):\n{text}"}
-    url = f"{config.VT_API.rstrip('/')}/files/{sha}/comments"
-    body = json.dumps({"data": {"type": "comment", "attributes": {"text": text[:4000]}}}).encode()
+        detail = f"would comment on {sha[:12]} ({len(text)} chars)"
+        if vote:
+            detail += f" + vote '{vote}'"
+        return {"target": "vt", "ok": True, "dry_run": True, "detail": f"{detail}:\n{text}"}
     headers = {"x-apikey": key, "Content-Type": "application/json"}
+    base = config.VT_API.rstrip("/")
     try:
-        code, resp = _http_post(url, headers, body)
-        return {"target": "vt", "ok": code in (200, 201), "detail": f"HTTP {code}"}
+        code, resp = _http_post(f"{base}/files/{sha}/comments", headers,
+                                json.dumps({"data": {"type": "comment", "attributes": {"text": text[:4000]}}}).encode())
+        vmsg = ""
+        if vote:
+            try:
+                vc, _ = _http_post(f"{base}/files/{sha}/votes", headers,
+                                   json.dumps({"data": {"type": "vote", "attributes": {"verdict": vote}}}).encode())
+                vmsg = f", vote {vote} HTTP {vc}"
+            except urllib.error.HTTPError as e:
+                vmsg = f", vote {vote} HTTP {e.code}"  # e.g. 409 if already voted
+            except Exception as e:
+                vmsg = f", vote {vote} failed: {e}"
+        return {"target": "vt", "ok": code in (200, 201), "detail": f"comment HTTP {code}{vmsg}"}
     except urllib.error.HTTPError as e:
         return {"target": "vt", "ok": False, "detail": f"HTTP {e.code} {e.read().decode('utf-8','ignore')[:160]}"}
     except Exception as e:

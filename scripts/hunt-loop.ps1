@@ -80,7 +80,21 @@ foreach ($s in $samples) {
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
         Write-Host "  start (headless)"
         VM ($base + @("start",$Vmx,"nogui")) | Out-Null
-        Start-Sleep -Seconds $BootWaitSec        # let the guest + VMware Tools come up
+        # Wait for an interactive DESKTOP session (explorer.exe). runProgramInGuest
+        # returns a generic 'exit code 1' for every program until a user is logged
+        # in, so the baseline MUST auto-login. Poll instead of a fixed sleep.
+        Write-Host "  waiting for desktop session (auto-login)..."
+        $sessionUp = $false
+        $deadline = (Get-Date).AddSeconds([Math]::Max($BootWaitSec, 150))
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 6
+            $procs = (& $VMRUN @($auth + @("listProcessesInGuest",$Vmx)) 2>&1) -join "`n"
+            if ($procs -match "explorer\.exe") { $sessionUp = $true; break }
+        }
+        if (-not $sessionUp) {
+            throw "no desktop session (explorer.exe) after boot - enable AUTO-LOGIN in the CLEANBASELINE (netplwiz), then re-snapshot"
+        }
+        Write-Host "  desktop ready"
 
         $guestZip = Join-Path $GuestIntake $s.Name
         Write-Host "  copy sample into guest intake"
