@@ -87,10 +87,21 @@ foreach ($s in $samples) {
         VM ($auth + @("copyFileFromHostToGuest",$Vmx,$s.FullName,$guestZip)) | Out-Null
 
         Write-Host "  detonate (autohunt --once, isolated)"
-        $cmd = "set ARGUS_RUNS=$ArgusRuns&& cd /d `"$GuestRepo`" && python run.py autohunt --once"
-        VM ($auth + @("runProgramInGuest",$Vmx,"C:\Windows\System32\cmd.exe","/c",$cmd)) | Out-Null
-
-        Write-Host "  done -> results on host ($ArgusRuns)" -ForegroundColor Green
+        # Capture EVERYTHING the guest does to a log so a failure is diagnosable
+        # (runProgramInGuest returns only an exit code, never stdout).
+        $glog = "C:\argus-autohunt.log"
+        $cmd  = "cd /d `"$GuestRepo`" && (echo === where python === & where python & echo === version === & python --version & echo === git === & git rev-parse --short HEAD) > $glog 2>&1 & echo === autohunt === >> $glog 2>&1 & set ARGUS_RUNS=$ArgusRuns&& python run.py autohunt --once >> $glog 2>&1"
+        & $VMRUN @($auth + @("runProgramInGuest",$Vmx,"C:\Windows\System32\cmd.exe","/c",$cmd)) 2>&1 | Out-Null
+        $rc = $LASTEXITCODE
+        if ($rc -ne 0) {
+            $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
+            & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
+            Write-Host "  ! detonate exit $rc - guest log:" -ForegroundColor Red
+            if (Test-Path $hostLog) { Get-Content $hostLog -Tail 35 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            else { Write-Host "    (could not copy guest log back)" -ForegroundColor DarkGray }
+        } else {
+            Write-Host "  done -> results on host ($ArgusRuns)" -ForegroundColor Green
+        }
     }
     catch {
         Write-Host "  ! $($s.Name): $($_.Exception.Message)" -ForegroundColor Red
