@@ -149,7 +149,10 @@ foreach ($s in $samples) {
     }
 }
 
-# leave the VM at the clean baseline, powered off
-VMquiet ($base + @("stop",$Vmx,"hard"))
-Write-Host "`n== hunt-loop complete. Results in $ArgusRuns ==" -ForegroundColor Cyan
-Write-Host "Review:  (on host) python run.py autohunt --reviews   / open the run folders"
+# Leave the VM AT the clean snapshot. Do NOT hard-stop here: a hard power-off
+# right after reverting a running-state snapshot orphans the current-state delta
+# disk and corrupts the chain. The final finally{} already reverted; leaving it
+# there is safe, and the next run reverts again anyway.
+VMquiet ($base + @("revertToSnapshot",$Vmx,$Snapshot))
+Write-Host "`n== hunt-loop complete. Drafts copied to $HostRunsDir ==" -ForegroundColor Cyan
+Write-Host "Review/publish on the host: http://127.0.0.1:8765/panel"
