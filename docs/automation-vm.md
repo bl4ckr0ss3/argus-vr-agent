@@ -1,96 +1,106 @@
-# Building an unencrypted automation VM (for hunt-loop.ps1)
+# Building the detonation VM for the autonomous hunt loop
 
-The `scripts/hunt-loop.ps1` orchestrator drives the guest via `vmrun`, which needs
-an **unencrypted** VM with **VMware Tools**. This is the one-time setup for a VM
-that runs the fully-unattended hunt loop.
+A clean, **unencrypted** Windows VM that `scripts/autonomous.ps1` drives via
+`vmrun` — no `-vp`, no encrypted-snapshot fragility. This checklist bakes in
+every lesson from getting the loop working end-to-end:
 
-Key idea: this VM **never needs the internet during hunting** — the host fetches
-inert sample zips and copies them in. So it stays **Host-only** in normal use.
+- the guest needs **auto-login** (runProgramInGuest can't launch programs with
+  no interactive session)
+- detonation needs **admin** (procmon loads a driver) → **UAC off** + admin user
+- the guest automation session **can't run `cmd.exe`** (blocked) → the scripts
+  drive **PowerShell**
+- the VMware **shared folder isn't reliable** from that session → results are
+  written guest-local and **copied out** by hunt-loop
+- the **CLEANBASELINE snapshot must be taken POWERED OFF** (a running-state
+  snapshot + hard-stop orphans a delta disk and corrupts the chain)
 
 ---
 
-## Phase 1 - Create the VM (NO encryption)
+## Phase 1 — create the VM (NO encryption)
+- New VM: Windows 10/11, **4 GB+ RAM, 2+ cores, 60 GB disk**.
+- **Do NOT enable encryption.**
+- Install Windows. Create a **local admin** user `lab` with password `12345`
+  (or your own — pass them to the scripts).
 
-- New VM in VMware Workstation: Windows 10/11, **4 GB+ RAM, 2+ cores, 60 GB disk**.
-- **Do NOT enable encryption** this time (that's what broke automation before).
-- Install Windows. Create a user **`lab`** with a password you'll remember
-  (this is the `-GuestPassword` you pass to hunt-loop.ps1).
+## Phase 2 — VMware Tools (REQUIRED)
+- **VM → Install VMware Tools**, run the installer in the guest, reboot.
+- Without Tools, `vmrun` can't copy files or run programs in the guest.
 
-## Phase 2 - VMware Tools (REQUIRED)
-
-- **VM -> Install VMware Tools**, run the installer in the guest, reboot.
-- `vmrun runProgramInGuest`/`copyFileFromHostToGuest` do not work without Tools.
-
-## Phase 3 - Tools + code (temporary NAT, no malware yet)
-
-Set the network adapter to **NAT** for setup downloads only, then in the guest:
-
+## Phase 3 — tools + code (temporary NAT)
+Set the adapter to **NAT** for setup only, then in the guest (elevated PowerShell):
 ```powershell
-# git + python
 winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
 winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
-
-# the code (public repo, no auth)
 git clone https://github.com/bl4ckr0ss3/argus-vr-agent.git C:\argus-vr-agent
 cd C:\argus-vr-agent
-
-# analysis tools
-New-Item -ItemType Directory -Force C:\Tools | Out-Null
-Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile C:\Tools\sys.zip
-Expand-Archive C:\Tools\sys.zip -DestinationPath C:\Tools\Sysinternals -Force
-winget install --id WiresharkFoundation.Wireshark -e --accept-source-agreements --accept-package-agreements
-
-# python libs (pyzipper = AES sample unpack; volatility3 = memscan)
 pip install yara-python pyzipper volatility3 pytest
 
-# PATH / exec policy / EULA
-Set-ExecutionPolicy -Scope Process Bypass -Force
-.\scripts\vm-setup.ps1
+# analysis tools into C:\Tools (procmon, tshark) and ON PATH
+New-Item -ItemType Directory -Force C:\Tools | Out-Null
+Invoke-WebRequest "https://download.sysinternals.com/files/SysinternalsSuite.zip" -OutFile C:\Tools\sys.zip
+Expand-Archive C:\Tools\sys.zip -DestinationPath C:\Tools -Force
+winget install --id WiresharkFoundation.Wireshark -e --accept-source-agreements --accept-package-agreements
+# add C:\Tools + Wireshark to the MACHINE PATH so elevated/automation sessions see them:
+[Environment]::SetEnvironmentVariable("PATH",
+  [Environment]::GetEnvironmentVariable("PATH","Machine") + ";C:\Tools;C:\Program Files\Wireshark", "Machine")
 ```
 
-## Phase 4 - Shared folder + persistent output
-
-- **VM -> Settings -> Options -> Shared Folders -> Enable**, add a host folder,
-  map it in the guest to `Z:` (or note its path).
-- Point ARGUS output at it so results survive reverts:
+## Phase 4 — auto-login + UAC off (the critical bits)
+Elevated PowerShell in the guest:
 ```powershell
-[Environment]::SetEnvironmentVariable("ARGUS_RUNS","Z:\argus-results\runs","User")
+# auto-login (creates a desktop session on every boot - required for runProgramInGuest)
+$w = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+Set-ItemProperty $w AutoAdminLogon  "1"
+Set-ItemProperty $w DefaultUserName "lab"
+Set-ItemProperty $w DefaultPassword "12345"
+Set-ItemProperty $w DefaultDomainName $env:COMPUTERNAME
+# disable UAC so detonation runs elevated (procmon needs admin)
+Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" EnableLUA 0
+# stop Defender from eating samples (isolated VM, so this is fine)
+Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+Add-MpPreference -ExclusionPath "C:\argus-vr-agent" -ErrorAction SilentlyContinue
 ```
+**Reboot** and confirm it lands **straight on the desktop** (no password prompt).
 
-## Phase 5 - Isolate, verify, snapshot
-
+## Phase 5 — isolate, verify, then snapshot POWERED OFF
 ```powershell
-# switch the network adapter back to HOST-ONLY (isolated) - this is the hunting state
-python run.py doctor        # want: network mode = detonation (isolated), DETONATION READY
+python C:\argus-vr-agent\run.py doctor    # want: procmon/tshark/yara OK, no keys
 ```
-- Confirm: procmon/tshark/yara OK, **no API keys**, isolated.
-- **Take a snapshot named `CLEANBASELINE`.**
-
-## Phase 6 - Run the orchestrator (on the HOST)
-
+- Set the network adapter to **Host-only** (isolated — this is the hunting state).
+- **Shut the VM DOWN** (Start → Power → Shut down). Fully powered off.
+- Then take the snapshot from the HOST, powered off:
 ```powershell
-# fetch inert zips to a host folder (Defender exclusion first, elevated shell):
-#   Add-MpPreference -ExclusionPath "<sampledir>"
+$vmx="C:\Users\Ege\Documents\Virtual Machines\<vm name>\<vm name>.vmx"
+$vr="C:\Program Files\VMware\VMware Workstation\vmrun.exe"
+& $vr -T ws snapshot $vmx CLEANBASELINE
+```
+> A **powered-off** snapshot reverts cleanly forever. Never snapshot while
+> running for an automation baseline — that is what corrupted the last VM.
+
+## Phase 6 — run it (on the HOST, two terminals)
+**Terminal 1 — publisher:**
+```powershell
 cd C:\Users\Ege\Downloads\Claude\argus-vr-agent
-$env:MALWAREBAZAAR_API_KEY = "<mb key>"
-python run.py fetch --tag RedLineStealer --limit 10
-
-# unattended hunt (no -VmPassword needed - unencrypted):
-.\scripts\hunt-loop.ps1 `
-    -Vmx "C:\Users\Ege\Documents\Virtual Machines\<vm name>\<vm name>.vmx" `
-    -Snapshot CLEANBASELINE `
-    -SampleDir ".\intake" `
-    -GuestUser lab -GuestPassword "<lab password>"
+$env:ARGUS_RUNS="C:\argus-results\runs"
+$env:VT_API_KEY="<your VT key>"
+$env:ARGUS_SITE_DIR="C:\Users\Ege\sites\0xblack.dev"
+$env:ARGUS_SITE_SUBDIR="static/findings"; $env:ARGUS_SITE_URL="https://0xblack.dev"
+$env:ARGUS_AUTOPUBLISH="1"
+python run.py web
 ```
+**Terminal 2 — hunter (unencrypted → no -VmPassword):**
+```powershell
+cd C:\Users\Ege\Downloads\Claude\argus-vr-agent
+$env:MALWAREBAZAAR_API_KEY="<your MB key>"
+.\scripts\autonomous.ps1 -Vmx "C:\Users\Ege\Documents\Virtual Machines\<vm name>\<vm name>.vmx" -GuestPassword 12345
+```
+(If you keep the VM encrypted, add `-VmPassword <encryption password>`.)
 
-Per sample: revert -> copy in -> autohunt -> results to `Z:` -> revert. Fully hands-off.
-
-## Gotchas
-
-| Symptom | Fix |
+## Gotchas (all now handled by the scripts)
+| Symptom | Cause / fix |
 |---|---|
-| `runProgramInGuest` fails/hangs | VMware Tools not up -> raise `-BootWaitSec 60`/`90` |
-| "Incorrect password" | you encrypted it again - don't; or wrong `-GuestPassword` |
-| guest "queue empty" | baseline lacks auto-unpack -> `git pull` in guest, re-snapshot |
-| `Add-MpPreference` denied | run the host PowerShell as Administrator |
-| results not on host | Shared Folder not mapped, or `ARGUS_RUNS` unset in baseline |
+| every program "exited with code 1" | no auto-login → do Phase 4, re-snapshot |
+| detonate fails on procmon | UAC on → set `EnableLUA=0`, reboot, re-snapshot |
+| "network location cannot be reached" | shared folder — scripts write guest-local + copy out |
+| "A required file was not found" on revert | snapshot was taken **running** then hard-stopped — always snapshot **powered off** |
+| `git pull` in guest needs internet | flip to NAT briefly, pull, flip back to Host-only, re-snapshot |
