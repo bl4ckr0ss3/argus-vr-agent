@@ -22,7 +22,7 @@
 #>
 param(
     [Parameter(Mandatory)] [string]$Vmx,
-    [string]$GuestUser     = "lab",
+    [string]$GuestUser     = "researcher",
     [string]$GuestPassword = "12345",
     [string]$VmPassword    = "12345678",           # VM encryption password
     [string]$Snapshot      = "CLEANBASELINE",
