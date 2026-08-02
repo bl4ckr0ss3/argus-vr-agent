@@ -136,6 +136,34 @@ def _local_capture_dir() -> Path:
     return d
 
 
+# Common Sysinternals install locations — checked when procmon is not on PATH
+# (an elevated shell often has a different PATH than the one vm-setup.ps1 patched).
+_PROCMON_DIRS = (
+    r"C:\Tools\Sysinternals", r"C:\Sysinternals", r"C:\Tools",
+    r"C:\Program Files\Sysinternals", r"C:\ProgramData\chocolatey\bin",
+)
+_PROCMON_NAMES = ("Procmon64.exe", "Procmon.exe", "procmon.exe")
+
+
+def _procmon_exe() -> str | None:
+    """Resolve the Process Monitor executable by full path. Bare `procmon` fails
+    the instant it isn't on PATH, so we look, in order: an explicit override
+    (ARGUS_PROCMON), the PATH, then the usual Sysinternals install dirs."""
+    override = os.environ.get("ARGUS_PROCMON", "").strip().strip('"')
+    if override and Path(override).exists():
+        return override
+    for name in ("procmon", "Procmon64", "Procmon"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    for d in _PROCMON_DIRS:
+        for name in _PROCMON_NAMES:
+            cand = Path(d) / name
+            if cand.exists():
+                return str(cand)
+    return None
+
+
 def _start_procmon_capture(out_dir: Path) -> dict:
     """Start Process Monitor capture. The backing file is written to LOCAL disk —
     procmon corrupts a .pml if it captures directly to a network/shared folder
@@ -145,10 +173,17 @@ def _start_procmon_capture(out_dir: Path) -> dict:
         local_pml.unlink(missing_ok=True)  # drop any stale capture
     except OSError:
         pass
-    cmd = f'procmon /BackingFile "{local_pml}" /Quiet /AcceptEula /Minimized'
+    exe = _procmon_exe()
+    if not exe:
+        # Surface it loudly instead of silently producing an INCONCLUSIVE verdict.
+        return {"pid": None, "log_local": str(local_pml),
+                "log": str(out_dir / "procmon.pml"), "command": None,
+                "error": "procmon not found — add Sysinternals to PATH or set "
+                         "ARGUS_PROCMON to the full Procmon.exe path"}
+    cmd = f'"{exe}" /BackingFile "{local_pml}" /Quiet /AcceptEula /Minimized'
     proc = subprocess.Popen(cmd, shell=True)
     time.sleep(3)  # give procmon time to start
-    return {"pid": proc.pid, "log_local": str(local_pml),
+    return {"pid": proc.pid, "log_local": str(local_pml), "exe": exe,
             "log": str(out_dir / "procmon.pml"), "command": cmd}
 
 
@@ -254,8 +289,20 @@ def _start_fakenet() -> subprocess.Popen | None:
     resolved = shutil.which(exe) or (exe if os.path.exists(exe) else None)
     if not resolved:
         return None
+    # FakeNet-NG loads its default config (configs/default.ini) relative to its
+    # OWN directory, so it exits instantly if launched from autohunt's cwd. Run
+    # it from the exe's folder, and pass the bundled default config explicitly
+    # when we can find one, so a full-path ARGUS_FAKENET just works.
+    exe_dir = os.path.dirname(resolved) or None
+    cmd = [resolved]
+    for cfg in ("configs/default.ini", "default.ini"):
+        cfg_path = os.path.join(exe_dir, cfg) if exe_dir else cfg
+        if exe_dir and os.path.exists(cfg_path):
+            cmd = [resolved, "-c", cfg_path]
+            break
     try:
-        proc = subprocess.Popen([resolved], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, cwd=exe_dir,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         return None
     time.sleep(4)  # let it bind interfaces before the sample runs
@@ -461,7 +508,7 @@ def _procmon_to_csv(out_dir: Path) -> Path | None:
         return csv_path  # already converted (e.g. a reanalyze pass) — reuse it
     # Resolve the actual binary and invoke it by full path — bare "procmon" can
     # fail here even when the capture worked (fresh shell / PATHEXT quirks).
-    exe = shutil.which("procmon") or shutil.which("Procmon64") or shutil.which("Procmon")
+    exe = _procmon_exe()
     if not exe:
         return None
     # A big .pml takes a while; scale the timeout with size (128 MB was timing
@@ -853,7 +900,12 @@ def run_detonation(sample, timeout: int = _MAX_EXECUTION_SECONDS, on_progress=No
                 emit("  FakeNet: NOT found on PATH — install FakeNet-NG. "
                      "Payload may stay dormant.")
     procmon = _start_procmon_capture(out_dir)
-    emit(f"  Procmon: PID {procmon.get('pid', '?')} -> {procmon.get('log')}")
+    if procmon.get("error"):
+        emit(f"  Procmon: {procmon['error']} — behavioral telemetry will be MISSING "
+             "(verdict falls back to static signals only).")
+    else:
+        emit(f"  Procmon: PID {procmon.get('pid', '?')} ({procmon.get('exe')}) "
+             f"-> {procmon.get('log')}")
     iface = _pick_capture_iface()
     net_proc = _start_network_capture(out_dir, iface)
     emit(f"  Network: {'capturing on iface ' + iface + ' -> ' + str(out_dir / 'network.pcap') if net_proc else 'unavailable (install tshark / add it to PATH)'}")

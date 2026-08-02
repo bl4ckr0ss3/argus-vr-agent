@@ -37,6 +37,10 @@ rules/community/
 # goodware corpus for the rule quality gate (may hold copyrighted binaries)
 goodware/
 
+# local-only provider toggles (point at a third-party endpoint; keep out of the repo)
+scripts/use-free-endpoint.ps1
+scripts/use-real-endpoint.ps1
+
 # selftest ground truth — samples/dumps are malware or large images; the user's
 # own manifest may reference local paths. Keep only the example + README tracked.
 validation/manifest.json
