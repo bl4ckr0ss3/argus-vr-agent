@@ -80,7 +80,11 @@ foreach ($s in $samples) {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
         Write-Host "  start (headless)"
-        VM ($base + @("start",$Vmx,"nogui")) | Out-Null
+        # A RUNNING-state snapshot leaves the VM already powered on after revert,
+        # so only start it if it isn't already running (a bare start would throw
+        # 'already running' and abort the sample).
+        $running = ((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx)
+        if (-not $running) { VMquiet ($base + @("start",$Vmx,"nogui")) }
         # Wait for an interactive DESKTOP session (explorer.exe). runProgramInGuest
         # returns a generic 'exit code 1' for every program until a user is logged
         # in, so the baseline MUST auto-login. Poll instead of a fixed sleep.
