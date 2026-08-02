@@ -27,7 +27,9 @@ param(
     [string]$VmPassword    = "12345678",           # VM encryption password
     [string]$Snapshot      = "CLEANBASELINE",
     [string[]]$Tags        = @("AsyncRAT","RedLineStealer","Formbook","AgentTesla",
-                               "XWorm","Amadey","Stealc","Lumma","Remcos","njrat"),
+                               "XWorm","Amadey","Stealc","Lumma","Remcos","njRAT",
+                               "Lokibot","Vidar","Quasar","SnakeKeylogger","DanaBot",
+                               "SmokeLoader","NanoCore","Raccoon","GuLoader","Rhadamanthys"),
     [int]$BatchSize        = 12,
     [int]$RoundDelaySec    = 300,                   # pause between rounds
     [int]$MaxRounds        = 0,                     # 0 = forever
@@ -82,7 +84,7 @@ if (-not (Test-Path $huntLoop)) { throw "hunt-loop.ps1 not next to this script" 
 $round = 0
 while ($true) {
     $round++
-    $tag = $Tags[($round - 1) % $Tags.Count]
+    $tag = $Tags | Get-Random          # shuffle: random family each round
     Write-Host "`n===== ROUND $round  (family: $tag) =====" -ForegroundColor Cyan
 
     # fresh batch dir each round so we never re-detonate old samples
