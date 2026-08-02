@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARGUS · Reverser</title>
+<style>
+:root{
+  --bg:#0c0d11; --panel:#141519; --panel2:#101116; --line:#24262f; --line2:#1c1e25;
+  --ink:#c8ccd4; --dim:#727a89; --dim2:#565d6b; --head:#8a93a3;
+  --amber:#e5c07b; --amberbg:#33301f; --sel:#2b2a1c; --selline:#3b3722;
+  --teal:#4ec9b0; --cyan:#56b6c2; --blue:#61afef; --purple:#c586c0;
+  --green:#98c379; --orange:#d19a66; --str:#ce9178; --cmt:#5c6370; --func:#dcdcaa;
+  --rose:#e06c75;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:12px/1.45 ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  overflow:hidden;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#2a2d37;border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---- top bar ---- */
+header{height:44px;display:flex;align-items:center;gap:16px;padding:0 14px;
+  background:linear-gradient(180deg,#15161c,#0f1015);border-bottom:1px solid var(--line)}
+.logo{font-weight:700;letter-spacing:.5px;display:flex;align-items:center;gap:7px;color:#fff}
+.logo .mark{color:var(--amber);font-size:15px}
+.logo small{color:var(--purple);font-weight:600;font-size:10px;letter-spacing:1px}
+.menu{display:flex;gap:2px}
+.menu button{background:none;border:0;padding:4px 9px;border-radius:6px;color:var(--head);cursor:pointer}
+.menu button:hover{background:#1e2029;color:var(--ink)}
+.loadbar{display:flex;align-items:center;gap:6px;flex:1;max-width:560px}
+.loadbar input{flex:1;background:#0a0b0e;border:1px solid var(--line);border-radius:7px;
+  padding:5px 9px;color:var(--ink);min-width:0}
+.loadbar input::placeholder{color:var(--dim2)}
+.btn{background:#1b1d25;border:1px solid var(--line);border-radius:7px;padding:5px 11px;cursor:pointer;color:var(--ink)}
+.btn:hover{border-color:var(--cyan)}
+.btn.amber{border-color:#5a4d24;color:var(--amber)}
+.spacer{flex:1}
+.status{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:11px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.off{background:#555;box-shadow:none}
+.pill{background:#15181d;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:11px;color:var(--dim)}
+
+/* ---- layout ---- */
+#app{display:grid;grid-template-columns:300px 1fr 440px;height:calc(100% - 44px)}
+.rail,.center,.decomp{overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.rail{border-right:1px solid var(--line);background:var(--panel2)}
+.decomp{border-left:1px solid var(--line);background:var(--panel2)}
+
+.pane{display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
+.pane.grow{flex:1}
+.pane-h{display:flex;align-items:center;gap:8px;padding:7px 11px;background:#101117;
+  border-bottom:1px solid var(--line2);color:var(--head);font-size:11px;letter-spacing:.4px;text-transform:uppercase}
+.pane-h .x{margin-left:auto;color:var(--dim2);cursor:pointer}
+.pane-h .cnt{color:var(--dim);text-transform:none;letter-spacing:0}
+.filter{padding:6px 8px;border-bottom:1px solid var(--line2)}
+.filter input{width:100%;background:#0a0b0e;border:1px solid var(--line);border-radius:6px;padding:5px 8px;color:var(--ink)}
+.scroll{overflow:auto;min-height:0;flex:1}
+
+/* tables in rail */
+table{width:100%;border-collapse:collapse}
+thead th{position:sticky;top:0;background:#0e0f14;color:var(--dim);text-align:left;
+  font-weight:500;padding:5px 10px;border-bottom:1px solid var(--line2);font-size:10.5px;letter-spacing:.3px}
+tbody td{padding:3px 10px;border-bottom:1px solid #16181e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:#191b22}
+tbody tr.sel{background:var(--sel);box-shadow:inset 2px 0 0 var(--amber)}
+.addr{color:var(--dim)}
+.nm{color:var(--ink)}
+.ty{color:var(--teal)}
+.ext{color:var(--orange)}
+
+/* function list */
+.flist{list-style:none;margin:0;padding:0}
+.flist li{display:flex;gap:10px;padding:3px 11px;cursor:pointer;border-bottom:1px solid #16181e}
+.flist li:hover{background:#191b22}
+.flist li.sel{background:var(--sel);box-shadow:inset 2px 0 0 var(--amber)}
+.flist .fa{color:var(--dim);min-width:88px}
+.flist .fn{color:var(--func);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flist .fn.named{color:var(--cyan)}
+
+/* ---- center ---- */
+.tabs{display:flex;gap:0;background:#101117;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{background:none;border:0;padding:9px 15px;color:var(--dim);cursor:pointer;
+  border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button:hover{color:var(--ink)}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--amber);background:#15161c}
+.tabs .close{padding:9px 8px;color:var(--dim2)}
+.view{flex:1;overflow:auto;min-height:0;display:none}
+.view.on{display:block}
+
+/* disassembly */
+.disln{display:flex;gap:0;padding:1px 0;white-space:pre;cursor:default}
+.disln:hover{background:#16181e}
+.disln.sel{background:var(--amberbg)}
+.disln .da{color:var(--dim);width:120px;padding-left:14px;flex:none}
+.disln .db{color:#5b6270;width:190px;flex:none;overflow:hidden}
+.disln .di{color:var(--ink);flex:1}
+.mn{color:var(--blue)}
+.mn.flow{color:var(--purple)}
+.mn.ret{color:var(--rose)}
+.reg{color:var(--teal)}
+.imm{color:var(--green)}
+.mem{color:var(--orange)}
+.tgt{color:var(--amber);cursor:pointer;text-decoration:none}
+.tgt:hover{text-decoration:underline}
+.lbl{color:var(--func)}
+.cmt{color:var(--cmt)}
+
+/* metadata / generic kv */
+.kv{padding:14px 18px}
+.kv .row{display:flex;gap:14px;padding:4px 0;border-bottom:1px solid #16181e}
+.kv .k{color:var(--dim);min-width:150px}
+.kv .v{color:var(--ink)}
+
+/* hex */
+.hexwrap{padding:8px 0}
+.hexln{display:flex;gap:16px;padding:1px 14px;white-space:pre}
+.hexln:hover{background:#16181e}
+.hexln .ho{color:var(--dim);width:110px;flex:none}
+.hexln .hb{color:var(--cyan);flex:none}
+.hexln .ha{color:var(--str)}
+.hexnav{display:flex;gap:8px;padding:8px 14px;border-bottom:1px solid var(--line2);align-items:center;color:var(--dim)}
+.hexnav input{width:130px;background:#0a0b0e;border:1px solid var(--line);border-radius:6px;padding:4px 7px;color:var(--ink)}
+
+/* bottom dock */
+.dock{height:210px;border-top:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel2)}
+.dock .view{display:none}
+.dock .view.on{display:block}
+.slist{list-style:none;margin:0;padding:0}
+.slist li{display:flex;gap:14px;padding:2px 14px;border-bottom:1px solid #16181e;cursor:pointer}
+.slist li:hover{background:#191b22}
+.slist .a{color:var(--dim);min-width:120px}
+.slist .lib{color:var(--orange);min-width:150px}
+.slist .t{color:var(--str)}
+.asm{padding:12px 14px;display:flex;flex-direction:column;gap:8px;height:100%}
+.asm textarea{flex:1;background:#0a0b0e;border:1px solid var(--line);border-radius:7px;
+  color:var(--ink);padding:8px;resize:none;font:inherit;min-height:60px}
+.asm .out{color:var(--green);white-space:pre-wrap;min-height:20px}
+.asm .out.err{color:var(--rose)}
+.asm .ctl{display:flex;gap:8px;align-items:center}
+.notes{padding:14px 18px;color:var(--dim);white-space:pre-wrap}
+
+/* decompiler */
+.dc-h{display:flex;align-items:center;gap:8px;padding:9px 14px;background:#101117;border-bottom:1px solid var(--line)}
+.dc-h .t{color:var(--ink)}
+.dc-h .eng{margin-left:auto;color:var(--dim);font-size:10.5px}
+.dc-body{flex:1;overflow:auto;padding:8px 0}
+.dcln{display:flex;white-space:pre;padding:0 0}
+.dcln:hover{background:#16181e}
+.dcln.sel{background:var(--amberbg)}
+.dcln .n{color:#3a3f4b;width:44px;text-align:right;padding-right:12px;flex:none;user-select:none}
+.dcln .c{flex:1}
+.kw{color:var(--purple)}.tyc{color:var(--teal)}.numc{color:var(--green)}
+.datc{color:var(--cyan)}.fnc{color:var(--func)}.comc{color:var(--cmt)}
+
+.empty{padding:40px;text-align:center;color:var(--dim)}
+.err{padding:16px;color:var(--rose)}
+.spin{color:var(--amber);padding:16px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="mark">◆</span> ARGUS <small>REVERSER</small></div>
+  <div class="menu">
+    <button onclick="pickFile()">File</button>
+    <button onclick="toast('View: use the tabs')">View</button>
+    <button onclick="toast('Decompiler: rule-based (offline, no API)')">Decompiler: rule-based</button>
+    <button onclick="location.href='/panel'">Findings ▸</button>
+  </div>
+  <div class="loadbar">
+    <input id="pathIn" placeholder="C:\\path\\to\\sample.exe   — or a review-queue sample path" spellcheck="false">
+    <button class="btn amber" onclick="loadPath()">Load</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="status">
+    <span id="sName" class="pill">no binary</span>
+    <span class="dot" id="csDot"></span><span id="csTxt">offline</span>
+  </div>
+  <input type="file" id="fileIn" style="display:none" onchange="loadFile(this)">
+</header>
+
+<div id="app">
+  <!-- LEFT RAIL -->
+  <aside class="rail">
+    <div class="pane" style="flex:1.1">
+      <div class="pane-h">Sections <span class="x">✕</span></div>
+      <div class="filter"><input id="secF" placeholder="Filter" oninput="renderSections()"></div>
+      <div class="scroll">
+        <table><thead><tr><th>ADDRESS</th><th>NAME</th><th>TYPE</th><th>PERM</th><th>SIZE</th></tr></thead>
+        <tbody id="secB"></tbody></table>
+      </div>
+    </div>
+    <div class="pane grow">
+      <div class="pane-h">Functions <span class="cnt" id="funCnt"></span> <span class="x">✕</span></div>
+      <div class="filter"><input id="funF" placeholder="Filter (name / hex addr)" oninput="renderFunctions()"></div>
+      <div class="scroll"><ul class="flist" id="funB"></ul></div>
+    </div>
+    <div class="pane" style="flex:1">
+      <div class="pane-h">Symbols <span class="x">✕</span></div>
+      <div class="filter"><input id="symF" placeholder="Filter" oninput="renderSymbols()"></div>
+      <div class="scroll">
+        <table><thead><tr><th>ADDRESS</th><th>NAME</th><th>TYPE</th></tr></thead>
+        <tbody id="symB"></tbody></table>
+      </div>
+    </div>
+  </aside>
+
+  <!-- CENTER -->
+  <main class="center">
+    <div class="tabs" id="ctabs">
+      <button data-t="disasm" class="on" onclick="tab('disasm')">Disassembly</button>
+      <button data-t="meta" onclick="tab('meta')">Metadata</button>
+      <button data-t="xrefs" onclick="tab('xrefs')">Xrefs</button>
+      <button data-t="hex" onclick="tab('hex')">Hex</button>
+      <button data-t="search" onclick="tab('search')">Search</button>
+      <button data-t="graph" onclick="tab('graph')">Graph</button>
+    </div>
+
+    <div id="v-disasm" class="view on"><div class="empty">Load a binary, then pick a function.</div></div>
+    <div id="v-meta" class="view"><div class="empty">—</div></div>
+    <div id="v-xrefs" class="view"><div class="empty">Select a function to see cross-references.</div></div>
+    <div id="v-hex" class="view">
+      <div class="hexnav">offset <input id="hexOff" value="0" onkeydown="if(event.key==='Enter')loadHex()">
+        <button class="btn" onclick="loadHex()">Go</button>
+        <button class="btn" onclick="hexPage(-1)">◀</button><button class="btn" onclick="hexPage(1)">▶</button>
+        <span id="hexInfo"></span></div>
+      <div class="hexwrap" id="hexB"></div>
+    </div>
+    <div id="v-search" class="view">
+      <div class="hexnav">bytes/text <input id="srchIn" style="width:260px" onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="btn" onclick="doSearch()">Search</button></div>
+      <div id="srchB"></div>
+    </div>
+    <div id="v-graph" class="view"><div class="empty">Select a function to view its control-flow graph.</div></div>
+
+    <!-- bottom dock -->
+    <div class="dock">
+      <div class="tabs">
+        <button data-b="imports" class="on" onclick="btab('imports')">Imports</button>
+        <button data-b="exports" onclick="btab('exports')">Exports</button>
+        <button data-b="strings" onclick="btab('strings')">Strings</button>
+        <button data-b="asm" onclick="btab('asm')">Assembler</button>
+        <button data-b="notes" onclick="btab('notes')">Notes</button>
+      </div>
+      <div style="flex:1;overflow:auto;min-height:0">
+        <div id="b-imports" class="view on"><ul class="slist" id="impB"></ul></div>
+        <div id="b-exports" class="view"><ul class="slist" id="expB"></ul></div>
+        <div id="b-strings" class="view"><ul class="slist" id="strB"></ul></div>
+        <div id="b-asm" class="view">
+          <div class="asm">
+            <textarea id="asmIn" placeholder="mov rax, 1&#10;xor rcx, rcx&#10;ret" spellcheck="false"></textarea>
+            <div class="ctl">
+              <select id="asmArch" class="btn">
+                <option value="x64">x86-64</option><option value="x86">x86</option>
+                <option value="arm64">ARM64</option><option value="arm">ARM</option>
+              </select>
+              <button class="btn amber" onclick="assemble()">Assemble ▶</button>
+              <span class="out" id="asmOut"></span>
+            </div>
+          </div>
+        </div>
+        <div id="b-notes" class="view"><div class="notes" id="notesB">ARGUS Reverser — static analysis workspace.
+Nothing here executes the sample. Disassembly by capstone, pseudocode is rule-based (offline, no API).
+Load a binary from a path or File ▸ browse. Click a function to disassemble + decompile it.</div></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- DECOMPILER -->
+  <aside class="decomp">
+    <div class="dc-h"><span class="t">Decompiler</span><span class="eng" id="dcEng">rule-based</span></div>
+    <div class="dc-body" id="dcB"><div class="empty">Pseudo-C appears here.</div></div>
+  </aside>
+</div>
+
+<script>
+const S = { sid:null, arch:'x64', bits:64, sections:[], functions:[], symbols:[],
+            imports:[], exports:[], strings:[], cur:null, hexOff:0 };
+const esc = s => (s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const hex = n => '0x'+Number(n).toString(16);
+async function api(p){ const r=await fetch(p); return r.json(); }
+async function post(p,b){ const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); return r.json(); }
+function toast(m){ const s=document.getElementById('sName'); const old=s.textContent; s.textContent=m; setTimeout(()=>s.textContent=old,1600); }
+function pickFile(){ document.getElementById('fileIn').click(); }
+
+/* ---------- load ---------- */
+async function loadPath(){
+  const path=document.getElementById('pathIn').value.trim();
+  if(!path) return;
+  ready(await post('/api/re/load',{path}));
+}
+async function loadFile(inp){
+  const f=inp.files[0]; if(!f) return;
+  const buf=await f.arrayBuffer();
+  let bin=''; const b=new Uint8Array(buf);
+  for(let i=0;i<b.length;i++) bin+=String.fromCharCode(b[i]);
+  ready(await post('/api/re/load',{name:f.name,b64:btoa(bin)}));
+}
+function ready(sum){
+  if(sum.error){ document.getElementById('v-disasm').innerHTML='<div class="err">'+esc(sum.error)+'</div>'; return; }
+  S.sid=sum.id; S.arch=sum.arch; S.bits=sum.bits;
+  document.getElementById('sName').textContent=sum.name+'  ·  '+sum.format+'/'+sum.arch;
+  const dot=document.getElementById('csDot'), txt=document.getElementById('csTxt');
+  if(sum.have_disasm){ dot.classList.remove('off'); txt.textContent='capstone '+sum.arch; }
+  else{ dot.classList.add('off'); txt.textContent='no capstone'; }
+  document.getElementById('asmArch').value=sum.arch;
+  Promise.all([
+    api('/api/re/sections?id='+S.sid).then(r=>{S.sections=r.sections||[];renderSections();}),
+    api('/api/re/functions?id='+S.sid).then(r=>{S.functions=r.functions||[];renderFunctions();}),
+    api('/api/re/symbols?id='+S.sid).then(r=>{S.symbols=r.symbols||[];renderSymbols();}),
+    api('/api/re/imports?id='+S.sid).then(r=>{S.imports=r.imports||[];renderImports();}),
+    api('/api/re/exports?id='+S.sid).then(r=>{S.exports=r.exports||[];renderExports();}),
+    api('/api/re/strings?id='+S.sid).then(r=>{S.strings=r.strings||[];renderStrings();}),
+  ]);
+  renderMeta(sum);
+  if(sum.counts.functions){ /* auto-open first named or entry */
+    const f=S.functions.find(x=>x.name==='entry')||S.functions[0];
+    if(f) selectFunc(f.addr);
+  } else { document.getElementById('v-disasm').innerHTML='<div class="empty">No functions discovered (need capstone, or unknown format).</div>'; }
+}
+
+/* ---------- rail: sections ---------- */
+function renderSections(){
+  const q=document.getElementById('secF').value.toLowerCase();
+  const b=document.getElementById('secB'); b.innerHTML='';
+  for(const s of S.sections){
+    if(q && !(s.name.toLowerCase().includes(q)||hex(s.va).includes(q))) continue;
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td class="addr">${hex(s.va)}</td><td class="nm">${esc(s.name)}</td>`+
+      `<td class="ty">${esc(s.type)}</td><td class="addr">${esc(s.perm)}</td><td class="addr">${s.rawsize}</td>`;
+    tr.onclick=()=>{ document.getElementById('hexOff').value=s.rawptr; S.hexOff=s.rawptr; tab('hex'); loadHex(); };
+    b.appendChild(tr);
+  }
+}
+/* ---------- rail: functions ---------- */
+function renderFunctions(){
+  const q=document.getElementById('funF').value.toLowerCase();
+  const b=document.getElementById('funB'); b.innerHTML='';
+  let shown=0;
+  for(const f of S.functions){
+    if(q && !(f.name.toLowerCase().includes(q)||hex(f.addr).includes(q))) continue;
+    shown++;
+    const li=document.createElement('li');
+    li.dataset.addr=f.addr;
+    const named=!f.name.startsWith('FUN_');
+    li.innerHTML=`<span class="fa">${hex(f.addr)}</span><span class="fn ${named?'named':''}">${esc(f.name)}</span>`;
+    li.onclick=()=>selectFunc(f.addr);
+    if(S.cur===f.addr) li.classList.add('sel');
+    b.appendChild(li);
+  }
+  document.getElementById('funCnt').textContent=`(${shown} / ${S.functions.length})`;
+}
+/* ---------- rail: symbols ---------- */
+function renderSymbols(){
+  const q=document.getElementById('symF').value.toLowerCase();
+  const b=document.getElementById('symB'); b.innerHTML='';
+  let n=0;
+  for(const s of S.symbols){
+    if(q && !s.name.toLowerCase().includes(q)) continue;
+    if(++n>4000) break;
+    const tr=document.createElement('tr');
+    const ext=s.type==='external';
+    tr.innerHTML=`<td class="addr">${s.addr?hex(s.addr):'0x0'}</td>`+
+      `<td class="${ext?'ext':'nm'}">${esc(s.name)}</td><td class="ty">${esc(s.type)}</td>`;
+    if(s.addr) tr.onclick=()=>selectFunc(s.addr);
+    b.appendChild(tr);
+  }
+}
+
+/* ---------- select function -> disasm + decompile ---------- */
+async function selectFunc(addr){
+  S.cur=addr;
+  document.querySelectorAll('#funB li').forEach(li=>li.classList.toggle('sel',+li.dataset.addr===addr));
+  document.getElementById('v-disasm').innerHTML='<div class="spin">disassembling…</div>';
+  document.getElementById('dcB').innerHTML='<div class="spin">lifting…</div>';
+  const [dis,dec]=await Promise.all([
+    api('/api/re/disasm?id='+S.sid+'&addr='+addr),
+    api('/api/re/decompile?id='+S.sid+'&addr='+addr),
+  ]);
+  renderDisasm(dis); renderDecompile(dec);
+  if(document.querySelector('#ctabs button[data-t="graph"]').classList.contains('on')) loadGraph();
+  loadXrefs(addr);
+}
+/* colorize an operand string */
+function colorOps(ops){
+  return esc(ops)
+    .replace(/\b(0x[0-9a-fA-F]+)\b/g,'<span class="imm">$1</span>')
+    .replace(/\b(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|rip|r8|r9|r10|r11|r12|r13|r14|r15|eax|ebx|ecx|edx|esi|edi|ebp|esp|ax|bx|cx|dx|al|bl|cl|dl|xmm\d+)\b/g,'<span class="reg">$1</span>')
+    .replace(/(\[[^\]]*\])/g,'<span class="mem">$1</span>');
+}
+function renderDisasm(d){
+  const el=document.getElementById('v-disasm');
+  if(d.error){ el.innerHTML='<div class="err">'+esc(d.error)+'</div>'; return; }
+  if(!d.rows||!d.rows.length){ el.innerHTML='<div class="empty">no instructions</div>'; return; }
+  let h='';
+  for(const r of d.rows){
+    let mnClass='mn';
+    if(r.flow==='ret') mnClass='mn ret'; else if(r.flow!=='normal') mnClass='mn flow';
+    let ins=`<span class="${mnClass}">${esc(r.mnemonic)}</span> `;
+    if(r.target!=null && (r.flow==='call'||r.flow==='jmp'||r.flow==='cjmp')){
+      const lbl=r.label?`&lt;${esc(r.label)}&gt;`:hex(r.target);
+      ins+=`<a class="tgt" onclick="goAddr(${r.target})">${lbl}</a>`;
+    } else {
+      ins+=colorOps(r.operands);
+    }
+    h+=`<div class="disln" id="d-${r.addr}"><span class="da">${hex(r.addr)}</span>`+
+       `<span class="db">${esc(r.bytes)}</span><span class="di">${ins}</span></div>`;
+  }
+  el.innerHTML=h;
+}
+function goAddr(addr){
+  const f=S.functions.find(x=>x.addr===addr);
+  if(f){ selectFunc(addr); return; }
+  const line=document.getElementById('d-'+addr);
+  if(line){ document.querySelectorAll('.disln.sel').forEach(x=>x.classList.remove('sel'));
+    line.classList.add('sel'); line.scrollIntoView({block:'center'}); }
+  else selectFunc(addr);
+}
+/* ---------- decompiler ---------- */
+function colorC(t){
+  return esc(t)
+    .replace(/\b(void|undefined\d*|int|char|long|byte|bool|do|while|if|else|goto|return|for|unsigned)\b/g,'<span class="kw">$1</span>')
+    .replace(/\b(DAT_[0-9a-f]+|_DAT_[0-9a-f]+)\b/g,'<span class="datc">$1</span>')
+    .replace(/\b(FUN_[0-9a-f]+|LAB_[0-9a-f]+)\b/g,'<span class="fnc">$1</span>')
+    .replace(/\b(0x[0-9a-fA-F]+|\d+)\b/g,'<span class="numc">$1</span>')
+    .replace(/(\/\*.*?\*\/)/g,'<span class="comc">$1</span>');
+}
+function renderDecompile(d){
+  const el=document.getElementById('dcB');
+  document.getElementById('dcEng').textContent=d.engine||'rule-based';
+  if(d.error){ el.innerHTML='<div class="err">'+esc(d.error)+'</div>'; return; }
+  if(!d.lines||!d.lines.length){ el.innerHTML='<div class="empty">no output</div>'; return; }
+  let h='',n=0;
+  for(const ln of d.lines){
+    const pad='&nbsp;'.repeat(ln.indent*2);
+    h+=`<div class="dcln" id="c-${ln.addr}" onclick="hlAddr(${ln.addr})">`+
+       `<span class="n">${++n}</span><span class="c">${pad}${colorC(ln.text)}</span></div>`;
+  }
+  el.innerHTML=h;
+}
+function hlAddr(addr){
+  document.querySelectorAll('.disln.sel').forEach(x=>x.classList.remove('sel'));
+  const dl=document.getElementById('d-'+addr);
+  if(dl){ dl.classList.add('sel'); dl.scrollIntoView({block:'center'}); }
+}
+
+/* ---------- tabs ---------- */
+function tab(t){
+  document.querySelectorAll('#ctabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.querySelectorAll('.center > .view').forEach(v=>v.classList.toggle('on',v.id==='v-'+t));
+  if(t==='hex'&&S.sid) loadHex();
+  if(t==='graph'&&S.cur!=null) loadGraph();
+}
+function btab(b){
+  document.querySelectorAll('.dock .tabs button').forEach(x=>x.classList.toggle('on',x.dataset.b===b));
+  document.querySelectorAll('.dock .view').forEach(v=>v.classList.toggle('on',v.id==='b-'+b));
+}
+
+/* ---------- metadata ---------- */
+function renderMeta(m){
+  const c=m.counts||{};
+  document.getElementById('v-meta').innerHTML=`<div class="kv">
+    ${row('File',m.name)}${row('SHA-256',m.sha256)}${row('Size',m.size+' bytes')}
+    ${row('Format',m.format)}${row('Architecture',m.arch+'  ('+m.bits+'-bit)')}
+    ${row('Entry point',hex(m.entry))}${row('Image base',hex(m.image_base))}
+    ${row('Sections',c.sections)}${row('Functions',c.functions)}${row('Symbols',c.symbols)}
+    ${row('Imports',c.imports)}${row('Exports',c.exports)}
+    ${row('Disassembler',m.have_capstone?'capstone (ok)':'missing — pip install capstone')}
+    ${row('Assembler',m.have_keystone?'keystone (ok)':'missing — pip install keystone-engine')}
+  </div>`;
+}
+const row=(k,v)=>`<div class="row"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
+
+/* ---------- xrefs ---------- */
+async function loadXrefs(addr){
+  const r=await api('/api/re/xrefs?id='+S.sid+'&addr='+addr);
+  const el=document.getElementById('v-xrefs');
+  if(!r.xrefs||!r.xrefs.length){ el.innerHTML='<div class="empty">No cross-references to '+hex(addr)+'.</div>'; return; }
+  let h='<div class="kv"><div class="row"><div class="k">XREFS TO</div><div class="v">'+hex(addr)+'</div></div>';
+  for(const x of r.xrefs) h+=`<div class="row"><div class="k">call/jmp from</div><div class="v"><a class="tgt" onclick="goAddr(${x})">${hex(x)}</a></div></div>`;
+  el.innerHTML=h+'</div>';
+}
+
+/* ---------- hex ---------- */
+async function loadHex(){
+  let off=parseInt(document.getElementById('hexOff').value)||0;
+  S.hexOff=off;
+  const r=await api('/api/re/hex?id='+S.sid+'&off='+off+'&len=1024');
+  let h='';
+  for(const ln of r.rows){
+    h+=`<div class="hexln"><span class="ho">${ln.off.toString(16).padStart(8,'0')}</span>`+
+       `<span class="hb">${esc(ln.hex)}</span><span class="ha">${esc(ln.ascii)}</span></div>`;
+  }
+  document.getElementById('hexB').innerHTML=h||'<div class="empty">—</div>';
+  document.getElementById('hexInfo').textContent=`${off} / ${r.total} bytes`+(r.va?('   va '+hex(r.va)):'');
+}
+function hexPage(d){ S.hexOff=Math.max(0,S.hexOff+d*1024); document.getElementById('hexOff').value=S.hexOff; loadHex(); }
+
+/* ---------- search ---------- */
+async function doSearch(){
+  const q=document.getElementById('srchIn').value;
+  const r=await api('/api/re/search?id='+S.sid+'&q='+encodeURIComponent(q));
+  const el=document.getElementById('srchB');
+  if(!r.hits||!r.hits.length){ el.innerHTML='<div class="empty">no hits</div>'; return; }
+  let h='<ul class="slist">';
+  for(const x of r.hits) h+=`<li onclick="document.getElementById('hexOff').value=${x.off};tab('hex');loadHex()"><span class="a">off ${hex(x.off)}</span><span class="t">${x.va?('va '+hex(x.va)):''}</span></li>`;
+  el.innerHTML=h+'</ul>';
+}
+
+/* ---------- graph ---------- */
+async function loadGraph(){
+  const r=await api('/api/re/cfg?id='+S.sid+'&addr='+S.cur);
+  const el=document.getElementById('v-graph');
+  if(r.error){ el.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return; }
+  if(!r.blocks||!r.blocks.length){ el.innerHTML='<div class="empty">no blocks</div>'; return; }
+  let h='<div style="padding:14px;display:flex;flex-direction:column;gap:14px;align-items:center">';
+  for(const b of r.blocks){
+    let ins=b.rows.map(x=>`<div class="disln"><span class="da">${hex(x.addr)}</span><span class="di"><span class="mn">${esc(x.mnemonic)}</span> ${colorOps(x.operands)}</span></div>`).join('');
+    const succ=(b.succ||[]).map(s=>`<a class="tgt" onclick="hlAddr(${s})">${hex(s)}</a>`).join(' , ')||'—';
+    h+=`<div style="border:1px solid var(--line);border-radius:8px;background:#12131a;min-width:420px;max-width:90%">
+      <div style="padding:6px 12px;border-bottom:1px solid var(--line2);color:var(--amber)">block ${hex(b.start)}</div>
+      <div style="padding:6px 0">${ins}</div>
+      <div style="padding:6px 12px;border-top:1px solid var(--line2);color:var(--dim)">→ ${succ}</div></div>`;
+  }
+  el.innerHTML=h+'</div>';
+}
+
+/* ---------- bottom dock lists ---------- */
+function renderImports(){
+  document.getElementById('impB').innerHTML=S.imports.map(i=>
+    `<li><span class="lib">${esc(i.lib)}</span><span class="t">${esc(i.name)}</span></li>`).join('')||'<div class="empty">none</div>';
+}
+function renderExports(){
+  document.getElementById('expB').innerHTML=S.exports.map(e=>
+    `<li onclick="selectFunc(${e.addr})"><span class="a">${hex(e.addr)}</span><span class="t">${esc(e.name)}</span></li>`).join('')||'<div class="empty">none</div>';
+}
+function renderStrings(){
+  document.getElementById('strB').innerHTML=S.strings.map(s=>
+    `<li onclick="document.getElementById('hexOff').value=${s.off};tab('hex');loadHex()"><span class="a">${s.va?hex(s.va):hex(s.off)}</span><span class="t">${esc(s.text)}</span></li>`).join('')||'<div class="empty">none</div>';
+}
+
+/* ---------- assembler ---------- */
+async function assemble(){
+  const code=document.getElementById('asmIn').value;
+  const arch=document.getElementById('asmArch').value;
+  const bits=arch==='x86'||arch==='arm'?32:64;
+  const out=document.getElementById('asmOut');
+  const r=await post('/api/re/asm',{code,arch,bits});
+  if(r.ok){ out.className='out'; out.textContent=r.bytes+'   ('+r.len+' bytes, '+r.count+' insn)'; }
+  else{ out.className='out err'; out.textContent=r.error; }
+}
+
+/* boot */
+(async()=>{ const st=await api('/api/re/status');
+  if(!st.have_capstone) document.getElementById('csTxt').textContent='pip install capstone'; })();
+</script>
+</body>
+</html>

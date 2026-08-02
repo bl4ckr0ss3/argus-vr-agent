@@ -214,6 +214,13 @@ class Handler(BaseHTTPRequestHandler):
             if config.WEB_TOKEN and qs.get("token", [""])[0]:
                 cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
             return self._send_file(STATIC / "findings.html", "text/html; charset=utf-8", cookie=cookie)
+        if route == "/re" or route == "/reverse":
+            cookie = None
+            if config.WEB_TOKEN and qs.get("token", [""])[0]:
+                cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
+            return self._send_file(STATIC / "re.html", "text/html; charset=utf-8", cookie=cookie)
+        if route.startswith("/api/re/"):
+            return self._re_get(route, qs)
         if route == "/api/publish/drafts":
             from argus import publish
             return self._json({"drafts": publish.list_drafts()})
@@ -274,6 +281,89 @@ class Handler(BaseHTTPRequestHandler):
                 return self._collab_message(payload)
             if parsed.path == "/api/collab/stop":
                 return self._collab_stop()
+        if parsed.path in ("/api/re/load", "/api/re/asm"):
+            length = int(self.headers.get("Content-Length", 0))
+            if length > config.MAX_UPLOAD_BYTES + 2_000_000:
+                return self._json({"error": "payload too large"}, 413)
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                return self._json({"error": "bad json"}, 400)
+            return self._re_post(parsed.path, payload)
+        return self._json({"error": "no route"}, 404)
+
+    # --- reverse-engineering workspace ------------------------------------
+    def _re_get(self, route: str, qs: dict):
+        from argus import re as remod
+        sid = qs.get("id", [""])[0]
+
+        def _addr():
+            v = qs.get("addr", ["0"])[0]
+            try:
+                return int(v, 0)
+            except ValueError:
+                return 0
+
+        if route == "/api/re/status":
+            return self._json({"have_capstone": remod.HAVE_CAPSTONE,
+                               "have_keystone": remod.HAVE_KEYSTONE})
+        sess = remod.get_session(sid)
+        if sess is None:
+            return self._json({"error": "no such session — load a binary first"}, 404)
+        if route == "/api/re/summary":
+            return self._json(sess.summary())
+        if route == "/api/re/sections":
+            return self._json({"sections": sess.sections()})
+        if route == "/api/re/symbols":
+            return self._json({"symbols": sess.symbols()[:20000]})
+        if route == "/api/re/functions":
+            return self._json({"functions": sess.functions})
+        if route == "/api/re/imports":
+            return self._json({"imports": sess.imports()})
+        if route == "/api/re/exports":
+            return self._json({"exports": sess.exports()})
+        if route == "/api/re/strings":
+            return self._json({"strings": sess.strings()})
+        if route == "/api/re/disasm":
+            return self._json(sess.disasm_func(_addr()))
+        if route == "/api/re/decompile":
+            return self._json(sess.decompile(_addr()))
+        if route == "/api/re/cfg":
+            return self._json(sess.cfg(_addr()))
+        if route == "/api/re/xrefs":
+            return self._json({"addr": _addr(), "xrefs": sess.xrefs_to(_addr())})
+        if route == "/api/re/hex":
+            try:
+                off = int(qs.get("off", ["0"])[0], 0)
+                length = int(qs.get("len", ["512"])[0])
+            except ValueError:
+                off, length = 0, 512
+            return self._json(sess.hexdump(off, length))
+        if route == "/api/re/search":
+            return self._json({"hits": sess.search(qs.get("q", [""])[0])})
+        return self._json({"error": f"no route {route}"}, 404)
+
+    def _re_post(self, route: str, payload: dict):
+        from argus import re as remod
+        if route == "/api/re/load":
+            path = (payload.get("path") or "").strip()
+            b64 = payload.get("b64")
+            name = payload.get("name") or ""
+            if b64:
+                import base64
+                try:
+                    data = base64.b64decode(b64)
+                except Exception:
+                    return self._json({"error": "bad base64"}, 400)
+                return self._json(remod.load_binary(name, data=data))
+            if path:
+                return self._json(remod.load_binary(name, path=path))
+            return self._json({"error": "provide 'path' or 'b64'"}, 400)
+        if route == "/api/re/asm":
+            from argus.re import disasm as D
+            return self._json(D.assemble(
+                payload.get("code", ""), payload.get("arch", "x64"),
+                int(payload.get("bits", 64)), int(payload.get("addr", 0))))
         return self._json({"error": "no route"}, 404)
 
     # --- endpoints ---------------------------------------------------------

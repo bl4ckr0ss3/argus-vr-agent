@@ -15,3 +15,11 @@ python-dotenv>=1.0.0
 
 # AES-encrypted sample archives (MalwareBazaar etc.)
 pyzipper>=0.3
+
+# --- optional: Reverser workspace (/re) ---
+# Disassembly + assembly for the browser RE panel. The panel degrades
+# gracefully without them (sections, hex, strings, imports/exports still work),
+# so these are optional:
+#   pip install capstone keystone-engine
+# capstone>=5.0      # disassembler
+# keystone-engine>=0.9  # assembler
