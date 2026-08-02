@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -383,3 +384,81 @@ def publish(draft: str, targets: list[str], confirm: bool = False,
 
     return {"ok": True, "dry_run": dry, "safety_override": bool(reason and force),
             "results": results}
+
+
+# ---------------------------------------------------------------------------
+# batch publish — "post all eligible to <targets>" with one click
+# ---------------------------------------------------------------------------
+# VirusTotal's free API is rate-limited (≈4 requests/min). Space posts out so a
+# bulk run doesn't get throttled into 429s. Tunable via ARGUS_VT_THROTTLE.
+_BATCH_THROTTLE = float(os.environ.get("ARGUS_VT_THROTTLE", "16"))
+
+_batch: dict = {"running": False, "dry": True, "total": 0, "done": 0,
+                "posted": 0, "skipped": 0, "failed": 0, "results": [],
+                "targets": [], "finished": False}
+_batch_lock = threading.Lock()
+
+
+def batch_eligible(only_unpublished: bool = True) -> list[dict]:
+    """Drafts a batch would act on: everything not already published, that the
+    safety gate clears (suspicious + adequate confidence, VT not contradicting)."""
+    out = []
+    for d in list_drafts():
+        if only_unpublished and d.get("status") == "published":
+            continue
+        if d.get("safety"):        # safety_reason is non-None -> would be blocked
+            continue
+        out.append(d)
+    return out
+
+
+def batch_status() -> dict:
+    with _batch_lock:
+        return dict(_batch, results=_batch["results"][-50:])
+
+
+def start_batch(targets: list[str], confirm: bool = False,
+                only_unpublished: bool = True) -> dict:
+    """Kick off (or dry-run) a batch publish of all eligible drafts to `targets`.
+    Returns immediately; poll batch_status() for progress. Never force-overrides
+    the safety gate — unsafe drafts are simply excluded."""
+    with _batch_lock:
+        if _batch["running"]:
+            return {"error": "a batch is already running", "status": dict(_batch)}
+        todo = batch_eligible(only_unpublished)
+        if not confirm:
+            # dry run: report what WOULD post, post nothing
+            return {"dry_run": True, "eligible": len(todo),
+                    "samples": [d.get("sample") or d["id"] for d in todo[:200]]}
+        _batch.update(running=True, dry=False, total=len(todo), done=0,
+                      posted=0, skipped=0, failed=0, results=[],
+                      targets=list(targets), finished=False)
+    t = threading.Thread(target=_run_batch, args=(todo, targets), daemon=True)
+    t.start()
+    return {"started": True, "total": len(todo)}
+
+
+def _run_batch(todo: list[dict], targets: list[str]) -> None:
+    for i, d in enumerate(todo):
+        approve(d["id"])  # a batch implies approval; the safety gate still applies
+        res = publish(d["id"], targets, confirm=True, force=False)
+        ok = res.get("ok") and not res.get("blocked") and \
+            any(r.get("ok") and not r.get("skipped") for r in res.get("results", []))
+        with _batch_lock:
+            _batch["done"] = i + 1
+            if res.get("blocked"):
+                _batch["skipped"] += 1
+            elif ok:
+                _batch["posted"] += 1
+            else:
+                _batch["failed"] += 1
+            _batch["results"].append({
+                "id": d["id"], "sample": d.get("sample") or d["id"],
+                "ok": bool(ok), "detail": res.get("blocked") or
+                "; ".join(f"{r['target']}:{'ok' if r.get('ok') else r.get('detail','?')}"
+                          for r in res.get("results", []))})
+        if i < len(todo) - 1:
+            time.sleep(_BATCH_THROTTLE)
+    with _batch_lock:
+        _batch["running"] = False
+        _batch["finished"] = True

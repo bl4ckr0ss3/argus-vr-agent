@@ -224,6 +224,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/publish/drafts":
             from argus import publish
             return self._json({"drafts": publish.list_drafts()})
+        if route == "/api/publish/all/status":
+            from argus import publish
+            return self._json(publish.batch_status())
         if route == "/api/jobs":
             from argus import jobs
             return self._json({"types": jobs.job_types(), "jobs": jobs.list_jobs()})
@@ -250,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json({"error": "unauthorized"}, 401)
         parsed = urlparse(self.path)
-        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs", "/api/publish/approve", "/api/publish/send"):
+        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs", "/api/publish/approve", "/api/publish/send", "/api/publish/all"):
             length = int(self.headers.get("Content-Length", 0))
             if length > config.MAX_UPLOAD_BYTES + 2_000_000:
                 return self._json({"error": "payload too large"}, 413)
@@ -266,6 +269,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(publish.publish(
                     payload.get("draft", ""), payload.get("targets", []),
                     confirm=bool(payload.get("confirm")), force=bool(payload.get("force"))))
+            if parsed.path == "/api/publish/all":
+                from argus import publish
+                return self._json(publish.start_batch(
+                    payload.get("targets", ["vt"]), confirm=bool(payload.get("confirm"))))
             if parsed.path == "/api/jobs":
                 from argus import jobs
                 return self._json(jobs.submit(payload.get("type", ""), payload.get("params", {})))

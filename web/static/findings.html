@@ -49,8 +49,16 @@
   <span class="sub" id="sub">review &amp; publish - nothing posts without your click</span>
   <span style="flex:1"></span>
   <a href="/re" style="color:var(--cyan);text-decoration:none;margin-right:12px">◆ Reverser</a>
+  <button class="go" id="allBtn" onclick="publishAll()">Publish all → VT</button>
   <button onclick="load()">Refresh</button>
 </header>
+<div id="batchBar" style="display:none;padding:12px 22px;border-bottom:1px solid var(--line);background:#10151f">
+  <div id="batchMsg" style="color:var(--ink)"></div>
+  <div style="height:8px;background:#0e1220;border-radius:6px;margin-top:8px;overflow:hidden">
+    <div id="batchFill" style="height:100%;width:0;background:var(--green);transition:width .3s"></div>
+  </div>
+  <div id="batchLog" class="out" style="margin-top:8px;max-height:160px;overflow:auto"></div>
+</div>
 <div id="wrap"><div class="empty">loading...</div></div>
 
 <script>
@@ -122,6 +130,45 @@ async function send(id, confirm) {
 function out(id, msg) {
   const el = document.querySelector(`.card[data-id="${id}"] .out`);
   if (el) el.textContent = msg;
+}
+
+// ---- batch: publish all eligible findings to VirusTotal ----
+let batchTimer = null;
+async function publishAll() {
+  // 1. dry run first — how many are eligible (unpublished + safety-cleared)?
+  const dry = await api('/api/publish/all', { targets: ['vt'], confirm: false });
+  if (dry.error) { alert(dry.error); return; }
+  const n = dry.eligible || 0;
+  if (!n) { alert('Nothing eligible — every finding is either already published or blocked by the safety gate.'); return; }
+  if (!confirm(`Post ${n} finding(s) to VirusTotal as public comments?\n\n`
+      + `Already-published and low-confidence/contradicted findings are skipped.\n`
+      + `Paced ~16s apart to respect the free API rate limit (≈${Math.ceil(n*16/60)} min).`)) return;
+  // 2. confirmed — start the background batch
+  const bar = document.getElementById('batchBar');
+  bar.style.display = 'block';
+  document.getElementById('allBtn').disabled = true;
+  document.getElementById('batchMsg').textContent = `Starting batch — ${n} finding(s)…`;
+  document.getElementById('batchLog').textContent = '';
+  document.getElementById('batchFill').style.width = '0';
+  const r = await api('/api/publish/all', { targets: ['vt'], confirm: true });
+  if (r.error) { alert(r.error); document.getElementById('allBtn').disabled = false; return; }
+  batchTimer = setInterval(pollBatch, 1500);
+}
+async function pollBatch() {
+  const s = await api('/api/publish/all/status');
+  const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+  document.getElementById('batchFill').style.width = pct + '%';
+  document.getElementById('batchMsg').textContent =
+    `${s.done}/${s.total} processed — ${s.posted} posted, ${s.skipped} skipped, ${s.failed} failed`;
+  document.getElementById('batchLog').textContent =
+    (s.results || []).map(x => `${x.ok ? 'OK ' : '·  '} ${x.sample?.slice(0,40)}  ${x.detail}`).join('\n');
+  if (s.finished || !s.running) {
+    clearInterval(batchTimer); batchTimer = null;
+    document.getElementById('allBtn').disabled = false;
+    document.getElementById('batchMsg').textContent =
+      `Done — ${s.posted} posted, ${s.skipped} skipped, ${s.failed} failed.`;
+    load();
+  }
 }
 
 load();
