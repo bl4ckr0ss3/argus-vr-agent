@@ -227,6 +227,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/publish/all/status":
             from argus import publish
             return self._json(publish.batch_status())
+        if route == "/api/autopublish/status":
+            from argus import autopublish
+            return self._json(autopublish.status())
         if route == "/api/jobs":
             from argus import jobs
             return self._json({"types": jobs.job_types(), "jobs": jobs.list_jobs()})
@@ -253,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return self._json({"error": "unauthorized"}, 401)
         parsed = urlparse(self.path)
-        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs", "/api/publish/approve", "/api/publish/send", "/api/publish/all"):
+        if parsed.path in ("/api/retrieve", "/api/upload", "/api/static/analyze", "/api/collab/start", "/api/collab/message", "/api/collab/stop", "/api/jobs", "/api/publish/approve", "/api/publish/send", "/api/publish/all", "/api/autopublish/toggle", "/api/autopublish/scan"):
             length = int(self.headers.get("Content-Length", 0))
             if length > config.MAX_UPLOAD_BYTES + 2_000_000:
                 return self._json({"error": "payload too large"}, 413)
@@ -273,6 +276,12 @@ class Handler(BaseHTTPRequestHandler):
                 from argus import publish
                 return self._json(publish.start_batch(
                     payload.get("targets", ["vt"]), confirm=bool(payload.get("confirm"))))
+            if parsed.path == "/api/autopublish/toggle":
+                from argus import autopublish
+                return self._json(autopublish.start() if payload.get("on") else autopublish.stop())
+            if parsed.path == "/api/autopublish/scan":
+                from argus import autopublish
+                return self._json(autopublish.scan_once(dry=bool(payload.get("dry"))))
             if parsed.path == "/api/jobs":
                 from argus import jobs
                 return self._json(jobs.submit(payload.get("type", ""), payload.get("params", {})))
@@ -809,6 +818,11 @@ def serve(host: str = "127.0.0.1", port: int = 8765):
     from argus import jobs
     jobs.load_all()  # restore persisted research jobs (survive restarts)
     get_index()  # warm the corpus so first request is fast
+    try:
+        from argus import autopublish
+        autopublish.maybe_autostart()  # opt-in via ARGUS_AUTOPUBLISH=1
+    except Exception as e:
+        print(f"  (autopublish not started: {e})")
     httpd = ThreadingHTTPServer((host, port), Handler)
     auth = "TOKEN AUTH ON" if config.WEB_TOKEN else ("open (localhost only)" if host in _LOCAL_HOSTS else "OPEN — no token!")
     print(f"ARGUS console -> http://{host}:{port}  [{auth}]  (Ctrl+C to stop)")

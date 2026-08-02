@@ -86,6 +86,33 @@ def cmd_app(_args) -> None:
     app_main()
 
 
+def cmd_autopublish(args) -> None:
+    """Auto-publish high-confidence, safety-cleared findings to VT + the site."""
+    _try_dotenv()
+    from argus import autopublish, site_publish
+    cfg = autopublish.settings()
+    print(f"autopublish — threshold >={cfg['threshold']}% · targets {cfg['targets']}")
+    print(f"  site: {site_publish.status()}")
+    if args.once or args.dry:
+        r = autopublish.scan_once(dry=args.dry)
+        print(f"  eligible: {r['eligible']}  published: {r.get('published_now', 0)}  "
+              f"{'(dry run — nothing posted)' if args.dry else ''}")
+        for x in r["results"]:
+            tail = x.get("targets") if not args.dry else f"conf {x.get('confidence')}%"
+            print(f"    - {str(x.get('sample'))[:40]}  {tail}")
+        return
+    # loop
+    print(f"  looping every {cfg['interval']}s — Ctrl+C to stop")
+    autopublish.start()
+    try:
+        import time
+        while True:
+            time.sleep(10)
+    except KeyboardInterrupt:
+        autopublish.stop()
+        print("\nstopped.")
+
+
 def cmd_fetch(args) -> None:
     _try_dotenv()
     from argus.intel import malwarebazaar
@@ -706,6 +733,11 @@ def main() -> None:
     pw.add_argument("--host", default="127.0.0.1")
     pw.add_argument("--port", type=int, default=8765)
     pw.set_defaults(func=cmd_web)
+
+    pap2 = sub.add_parser("autopublish", help="auto-publish high-confidence findings to VT + site")
+    pap2.add_argument("--once", action="store_true", help="one scan then exit")
+    pap2.add_argument("--dry", action="store_true", help="show what would publish, post nothing")
+    pap2.set_defaults(func=cmd_autopublish)
 
     pap = sub.add_parser("app", help="launch the native desktop application window")
     pap.set_defaults(func=cmd_app)

@@ -49,6 +49,7 @@
   <span class="sub" id="sub">review &amp; publish - nothing posts without your click</span>
   <span style="flex:1"></span>
   <a href="/re" style="color:var(--cyan);text-decoration:none;margin-right:12px">◆ Reverser</a>
+  <button id="autoBtn" onclick="toggleAuto()" title="Auto-publish high-confidence findings to VT + site">Autopilot: …</button>
   <button class="go" id="allBtn" onclick="publishAll()">Publish all → VT</button>
   <button onclick="load()">Refresh</button>
 </header>
@@ -170,6 +171,32 @@ async function pollBatch() {
     load();
   }
 }
+
+// ---- autopilot toggle ----
+async function refreshAuto() {
+  try {
+    const s = await api('/api/autopublish/status');
+    const b = document.getElementById('autoBtn');
+    const siteOk = s.site && s.site.configured;
+    b.textContent = `Autopilot: ${s.running ? 'ON' : 'OFF'} (≥${s.threshold}%)`;
+    b.className = s.running ? 'go' : '';
+    b.title = `Auto-publish ≥${s.threshold}% safety-cleared findings to ${s.targets.join(' + ')}. `
+      + `VT key: ${s.vt_ready ? 'ready' : 'missing'}; site: ${siteOk ? 'configured' : 'not configured'}.`;
+  } catch (e) {}
+}
+async function toggleAuto() {
+  const s = await api('/api/autopublish/status');
+  if (!s.running) {
+    let warn = `Enable Autopilot?\n\nHigh-confidence (≥${s.threshold}%) safety-cleared findings will `
+      + `AUTO-publish to ${s.targets.join(' + ')} with no further clicks.`;
+    if (!s.vt_ready && s.targets.includes('vt')) warn += `\n\n⚠ VT_API_KEY not set — VT posts will be skipped.`;
+    if (s.targets.includes('site') && !(s.site && s.site.configured)) warn += `\n\n⚠ ARGUS_SITE_DIR not set — site posts will fail.`;
+    if (!confirm(warn)) return;
+  }
+  await api('/api/autopublish/toggle', { on: !s.running });
+  setTimeout(refreshAuto, 600);
+}
+refreshAuto();
 
 load();
 </script>
