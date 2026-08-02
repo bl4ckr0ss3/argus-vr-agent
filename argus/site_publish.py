@@ -23,9 +23,19 @@ from . import report as R
 
 def _cfg():
     d = os.environ.get("ARGUS_SITE_DIR", "").strip().strip('"')
+    subdir = os.environ.get("ARGUS_SITE_SUBDIR", "findings").strip("/ ")
+    # Static-site generators (Hugo/Gatsby: static/, Jekyll: no prefix) copy a
+    # `static/` (or `public/`) directory to the site ROOT — so a file written to
+    # static/findings/x.html is served at /findings/x.html. Strip that prefix
+    # from the PUBLIC url path while keeping it for the on-disk write path.
+    url_sub = subdir
+    for pref in ("static/", "public/", "assets/"):
+        if url_sub.startswith(pref):
+            url_sub = url_sub[len(pref):]
+            break
     return {
         "dir": Path(d) if d else None,
-        "subdir": os.environ.get("ARGUS_SITE_SUBDIR", "findings").strip("/ "),
+        "subdir": subdir, "url_sub": url_sub,
         "url": os.environ.get("ARGUS_SITE_URL", "").strip().rstrip("/"),
         "push": os.environ.get("ARGUS_SITE_PUSH", "1") != "0",
         "branch": os.environ.get("ARGUS_SITE_BRANCH", "").strip(),
@@ -43,7 +53,7 @@ def analysis_url(sha256: str) -> str | None:
     c = _cfg()
     if not c["url"] or len(sha256 or "") != 64:
         return None
-    return f"{c['url']}/{c['subdir']}/{sha256[:16]}.html"
+    return f"{c['url']}/{c['url_sub']}/{sha256[:16]}.html"
 
 
 def status() -> dict:
@@ -114,7 +124,7 @@ def publish_finding(struct: dict, do_push: bool | None = None) -> dict:
         args = ["push"] + (["origin", c["branch"]] if c["branch"] else [])
         pc, push_msg = _git(c["dir"], *args, timeout=120)
         pushed = pc == 0
-    url = f"{c['url']}/{c['subdir']}/{fname}" if c["url"] else f"{c['subdir']}/{fname}"
+    url = f"{c['url']}/{c['url_sub']}/{fname}" if c["url"] else f"{c['url_sub']}/{fname}"
     return {"ok": True, "url": url, "file": fname, "committed": committed,
             "pushed": pushed, "push_msg": push_msg[:300] if push_msg else "",
             "count": len(feed)}
