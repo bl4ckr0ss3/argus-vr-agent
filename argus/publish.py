@@ -201,6 +201,121 @@ def post_linkedin(text: str, dry_run: bool = True) -> dict:
         return {"target": "linkedin", "ok": False, "detail": str(e)}
 
 
+_VERDICT_LINE = {
+    "suspicious": "Assessed SUSPICIOUS (behaviour consistent with malware)",
+    "benign": "Assessed BENIGN (no malicious behaviour observed)",
+    "inconclusive": "INCONCLUSIVE (insufficient behavioural evidence)",
+}
+_CONF_BAND = lambda c: ("high" if c >= 85 else "moderate" if c >= 65 else "low")
+
+# Benign artefacts that leak in from Windows system paths / OS telemetry and
+# must never appear as IOCs in a published comment.
+_IOC_DENY = {
+    "microsoft.net", "microsoft.com", "windows.com", "windows.net",
+    "live.com", "msftncsi.com", "msftconnecttest.com", "windowsupdate.com",
+    "digicert.com", "verisign.com", "sectigo.com", "globalsign.com",
+    "schemas.microsoft.com", "go.microsoft.com", "w3.org", "example.com",
+}
+
+
+def build_vt_comment(struct: dict) -> str:
+    """A professional, analyst-grade VT comment: methodology, observed behavior,
+    ATT&CK mapping, IOCs and a disclaimer. Sections with no data are omitted so
+    the comment stays accurate rather than padded."""
+    verdict = struct.get("verdict", "inconclusive")
+    conf = struct.get("confidence", 0) or 0
+    head = _VERDICT_LINE.get(verdict, verdict.upper())
+    L: list[str] = []
+    L.append(f"=== ARGUS Automated Triage Report ===")
+    L.append(f"{head} — confidence {conf}% ({_CONF_BAND(conf)}).")
+    L.append("")
+    L.append("Methodology: sample executed in an isolated, instrumented Windows "
+             "VM (host-only networking with emulated C2 responses) while process, "
+             "file-system, registry and network activity were recorded. The "
+             "verdict below is derived by correlating observed runtime behaviour "
+             "with static indicators; no sample was uploaded.")
+    L.append("")
+    L.append("-- Observed behaviour --")
+
+    def _uniq(seq):
+        seen, out = set(), []
+        for x in seq or []:
+            s = str(x).strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    persistence = _uniq(struct.get("persistence"))
+    spawned = _uniq(struct.get("spawned"))
+    drops = _uniq(struct.get("staged_payloads"))
+    net = _uniq(struct.get("net"))
+    if persistence:
+        L.append(f"* Persistence ({len(persistence)}): " + "; ".join(persistence[:6]))
+    if spawned:
+        L.append(f"* Child processes ({len(spawned)}): " + "; ".join(spawned[:6]))
+    if drops:
+        L.append(f"* Dropped files ({len(drops)}): " + "; ".join(drops[:6]))
+    if net:
+        L.append(f"* Network endpoints contacted ({len(net)}): " + ", ".join(net[:8]))
+    if struct.get("packed"):
+        pk = struct.get("packer")
+        if isinstance(pk, dict):
+            name = pk.get("packer") or "detected"
+            conf = pk.get("confidence")
+            pk = f"{name}" + (f" ({conf} confidence)" if conf else "")
+        ent = struct.get("entropy")
+        L.append(f"* Packing/obfuscation: {pk or 'detected'}"
+                 + (f"; overall entropy {ent}" if ent else ""))
+    if not any((persistence, spawned, drops, net, struct.get("packed"))):
+        L.append("* No high-confidence host or network side effects captured in "
+                 "this run (payload may be environment-gated or dormant).")
+
+    signals = struct.get("signals") or []
+    if signals:
+        L.append("")
+        L.append("Heuristic signals: " + ", ".join(signals))
+
+    attack = struct.get("attack") or []
+    if attack:
+        L.append("")
+        L.append("MITRE ATT&CK: " + "; ".join(
+            f"{t.get('id')} {t.get('name','')}".strip() for t in attack[:10]))
+
+    yara = struct.get("yara") or []
+    if yara:
+        L.append("YARA matches: " + ", ".join(yara[:8]))
+
+    # defanged IOCs for defenders
+    try:
+        from . import ioc as _ioc
+        iocs = _ioc.extract_from(struct, struct.get("static"))
+        own = (struct.get("sha256") or "").lower()  # don't list the file's own hash as an IOC of itself
+        flat = []
+        for cat, vals in (iocs or {}).items():
+            for v in vals[:6]:
+                low = str(v).lower()
+                if low == own or low in _IOC_DENY:
+                    continue
+                flat.append(_ioc.defang(v, _ioc._KIND.get(cat, cat)))
+        if flat:
+            L.append("")
+            L.append("Indicators of Compromise (defanged): " + ", ".join(flat[:16]))
+    except Exception:
+        pass
+
+    vt = struct.get("vt") or {}
+    if vt.get("summary"):
+        L.append("")
+        L.append(f"Cross-reference: VirusTotal reputation at analysis time — {vt['summary']}.")
+
+    L.append("")
+    L.append("This is an automated assessment shared for community awareness and "
+             "should be independently verified before operational use. "
+             "Analysis: ARGUS. #malware #DFIR #threatintel #malwareanalysis")
+    return "\n".join(L)
+
+
 def post_vt_comment(struct: dict, dry_run: bool = True) -> dict:
     """Attach the analysis as a COMMENT on the existing hash. Never uploads a sample."""
     key = (config.VT_API_KEY or "").strip()
@@ -209,14 +324,12 @@ def post_vt_comment(struct: dict, dry_run: bool = True) -> dict:
         return {"target": "vt", "skipped": True, "detail": "no VT_API_KEY"}
     if len(sha) != 64:
         return {"target": "vt", "skipped": True, "detail": "no sha256 to comment on"}
-    signals = ", ".join(struct.get("signals", [])) or "n/a"
-    text = (f"ARGUS dynamic analysis: {struct.get('verdict', '?')} "
-            f"(confidence {struct.get('confidence', '?')}%). Indicators: {signals}. "
-            f"ATT&CK: {', '.join(t['id'] for t in struct.get('attack', []))}. #DFIR")
+    text = build_vt_comment(struct)
     if dry_run:
-        return {"target": "vt", "ok": True, "dry_run": True, "detail": f"would comment on {sha[:12]}: {text[:100]}"}
+        return {"target": "vt", "ok": True, "dry_run": True,
+                "detail": f"would comment on {sha[:12]} ({len(text)} chars):\n{text}"}
     url = f"{config.VT_API.rstrip('/')}/files/{sha}/comments"
-    body = json.dumps({"data": {"type": "comment", "attributes": {"text": text[:600]}}}).encode()
+    body = json.dumps({"data": {"type": "comment", "attributes": {"text": text[:4000]}}}).encode()
     headers = {"x-apikey": key, "Content-Type": "application/json"}
     try:
         code, resp = _http_post(url, headers, body)
