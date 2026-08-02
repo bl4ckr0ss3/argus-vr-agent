@@ -254,6 +254,25 @@ def _uniq(seq):
     return out
 
 
+def _short(s, n: int = 90) -> str:
+    """Truncate a token so VT doesn't reject the comment ('too long word' — VT
+    caps individual word length; long paths/hashes and the compact JSON hit it)."""
+    s = str(s)
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _cap_ioc(ioc: dict, n: int = 88) -> dict:
+    out = {}
+    for k, v in ioc.items():
+        if isinstance(v, list):
+            out[k] = [_short(x, n) for x in v]
+        elif isinstance(v, str):
+            out[k] = _short(v, n)
+        else:
+            out[k] = v
+    return out
+
+
 def _tagify(s: str) -> str:
     """A safe #hashtag from an arbitrary label."""
     import re
@@ -374,13 +393,13 @@ def build_vt_comment(struct: dict) -> str:
     persistence = _uniq(struct.get("persistence"))
     beh = []
     if persistence:
-        beh.append(f"- Persistence: {'; '.join(persistence[:4])}")
+        beh.append("- Persistence: " + "; ".join(_short(x) for x in persistence[:4]))
     if spawned:
-        beh.append(f"- Child processes: {'; '.join(spawned[:4])}")
+        beh.append("- Child processes: " + "; ".join(_short(x) for x in spawned[:4]))
     if drops:
-        beh.append(f"- Dropped files: {'; '.join(drops[:4])}")
+        beh.append("- Dropped files: " + "; ".join(_short(x) for x in drops[:4]))
     if net:
-        beh.append(f"- Network: {', '.join(net[:6])}")
+        beh.append("- Network: " + ", ".join(_short(x) for x in net[:6]))
     if struct.get("packed"):
         pk = struct.get("packer")
         if isinstance(pk, dict):
@@ -411,17 +430,18 @@ def build_vt_comment(struct: dict) -> str:
                 flat.append(_ioc.defang(v, _ioc._KIND.get(cat, cat)))
         if flat:
             L.append("")
-            L.append("**IOCs (defanged):** " + ", ".join(flat[:12]))
+            L.append("**IOCs (defanged):** " + ", ".join(_short(x) for x in flat[:12]))
     except Exception:
         pass
 
-    # publishable JSON IOC block — copy-paste for defenders / SIEM
+    # publishable JSON IOC block — copy-paste for defenders / SIEM. INDENTED
+    # (not compact) + long values truncated, so VT never sees a "too long word".
     ioc = _ioc_json(struct, family)
     if ioc:
         L.append("")
         L.append("**IOCs (JSON):**")
         L.append("```json")
-        L.append(json.dumps(ioc, separators=(",", ":")))
+        L.append(json.dumps(_cap_ioc(ioc), indent=2))
         L.append("```")
 
     L.append("")
