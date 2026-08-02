@@ -65,3 +65,4 @@ env/
 
 # generated assets
 assets/
+web/static/mascot.*

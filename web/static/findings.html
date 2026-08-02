@@ -3,68 +3,76 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ARGUS - Findings & Publish</title>
+<title>ARGUS · Findings</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e1013'/%3E%3Cpath d='M16 6l10 10-10 10L6 16z' fill='%23f2b45a'/%3E%3C/svg%3E">
 <style>
-  /* cozy retro terminal — warm espresso + amber phosphor, boxy, minimal */
-  :root { --bg:#17110a; --panel:#1e160c; --panel2:#241b10; --line:#3b2d1c;
-          --ink:#ecdcbe; --dim:#a68d66; --amber:#e6a94e; --gold:#d7b467;
-          --cyan:#9fb079; --sage:#9fb079; --rose:#d98a66; --green:#a7b06a; --sel:#2a1f10; }
+  /* ARGUS deck — simplified dark, amber accent, mascot companion */
+  :root { --bg:#0e1013; --panel:#161a20; --panel2:#1b2028; --line:#262c35;
+          --ink:#e2e6ec; --dim:#8a94a2; --amber:#f2b45a; --gold:#f2b45a;
+          --cyan:#79b3c4; --sage:#8fbf8a; --rose:#e0857a; --green:#8fbf8a; --sel:#243040; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); min-height:100vh;
-         font:14px/1.55 "Cascadia Code",ui-monospace,Consolas,monospace;
-         background-image:radial-gradient(130% 90% at 50% -15%, #241a0d 0%, var(--bg) 62%); }
-  /* faint CRT scanlines — subtle, cozy not harsh */
-  body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:9999;
-         background:repeating-linear-gradient(0deg, rgba(0,0,0,.05) 0 1px, transparent 1px 3px);
-         opacity:.6; mix-blend-mode:multiply; }
-  ::selection { background:#5a4320; color:#fff3dc; }
+         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  ::selection { background:#334255; color:#fff; }
   input[type=checkbox]{ accent-color:var(--amber); }
-  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex;
-           align-items:center; gap:14px; position:sticky; top:0; z-index:10;
-           background:linear-gradient(180deg,#211710,#1a1209); }
-  header h1 { font-size:14px; margin:0; letter-spacing:1.5px; color:var(--amber); text-transform:uppercase; }
-  header h1::before { content:"▚ "; color:var(--gold); }
-  header .sub { color:var(--dim); font-size:12px; }
-  button { font:inherit; cursor:pointer; border:1px solid var(--line);
-           background:#251a0e; color:var(--ink); padding:6px 12px; border-radius:3px;
-           letter-spacing:.3px; transition:border-color .12s, color .12s; }
+  header { display:flex; align-items:center; gap:6px; padding:12px 22px; border-bottom:1px solid var(--line);
+           position:sticky; top:0; z-index:20; background:rgba(14,16,19,.92); backdrop-filter:blur(8px); }
+  .brand { font-weight:800; letter-spacing:.5px; margin-right:6px;
+           font-family:ui-monospace,"Cascadia Code",Consolas,monospace; }
+  .brand b { color:var(--amber); }
+  nav { display:flex; gap:2px; }
+  nav a { color:var(--dim); text-decoration:none; padding:6px 12px; border-radius:8px; font-size:13px; }
+  nav a:hover { color:var(--ink); background:var(--panel); }
+  nav a.on { color:var(--amber); background:var(--panel); }
+  header .sub { color:var(--dim); font-size:12px; margin-left:8px; }
+  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel);
+           color:var(--ink); padding:6px 12px; border-radius:8px; transition:.12s; }
   button:hover { border-color:var(--amber); color:var(--amber); }
-  button.go { border-color:#5a4a26; color:var(--gold); }
-  button.go:hover { border-color:var(--amber); color:var(--amber); background:#2c2010; }
+  button.go { border-color:#5a4a2a; color:var(--amber); }
+  button.go:hover { background:#241c10; }
   button.warn { border-color:var(--rose); color:var(--rose); }
-  a { color:var(--sage); text-decoration:none; }
-  a:hover { color:var(--amber); }
-  #wrap { padding:22px; max-width:940px; margin:0 auto; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:4px;
-          padding:16px 18px; margin-bottom:14px;
-          box-shadow:0 1px 0 #0c0803, inset 0 0 46px rgba(0,0,0,.18); }
-  .card h2 { font-size:14px; margin:0 0 8px; word-break:break-all; color:var(--ink); }
-  .badge { display:inline-block; padding:2px 9px; border-radius:3px; font-size:10.5px;
-           font-weight:700; text-transform:uppercase; letter-spacing:.8px; border:1px solid transparent; }
-  .b-suspicious { background:rgba(217,138,102,.12); color:var(--rose); border-color:#4a3320; }
-  .b-benign { background:rgba(167,176,106,.12); color:var(--green); border-color:#3a3a1e; }
-  .b-inconclusive { background:rgba(166,141,104,.12); color:var(--dim); }
-  .b-approved { background:rgba(215,180,103,.14); color:var(--gold); border-color:#4a3a1e; }
-  .b-published { background:rgba(159,176,121,.13); color:var(--sage); border-color:#3a3a20; }
-  .b-pending-review { background:rgba(230,169,78,.14); color:var(--amber); border-color:#4a3818; }
-  .meta { color:var(--dim); font-size:12px; margin:6px 0; }
+  a { color:var(--cyan); text-decoration:none; }
+  #wrap { padding:22px; max-width:920px; margin:0 auto; position:relative; z-index:2; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; margin-bottom:14px; }
+  .card h2 { font-size:14px; margin:0 0 8px; word-break:break-all; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:10.5px;
+           font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+  .b-suspicious { background:rgba(224,133,122,.14); color:var(--rose); }
+  .b-benign { background:rgba(143,191,138,.14); color:var(--green); }
+  .b-inconclusive { background:rgba(138,148,162,.14); color:var(--dim); }
+  .b-approved { background:rgba(242,180,90,.16); color:var(--amber); }
+  .b-published { background:rgba(143,191,138,.14); color:var(--sage); }
+  .b-pending-review { background:rgba(242,180,90,.16); color:var(--amber); }
+  .meta { color:var(--dim); font-size:12px; margin:6px 0; font-family:ui-monospace,Consolas,monospace; }
   .meta b { color:var(--ink); font-weight:600; }
-  .tweet { width:100%; background:#140e07; color:var(--ink); border:1px solid var(--line);
-           border-radius:3px; padding:9px; font:inherit; resize:vertical; min-height:56px; }
-  .safety { background:rgba(217,138,102,.1); border:1px solid #5a3a26; color:var(--rose);
-            padding:8px 10px; border-radius:3px; margin:8px 0; font-size:12px; }
+  .tweet { width:100%; background:#0e1116; color:var(--ink); border:1px solid var(--line);
+           border-radius:8px; padding:9px; font:13px ui-monospace,Consolas,monospace; resize:vertical; min-height:56px; }
+  .safety { background:rgba(224,133,122,.1); border:1px solid #4a2f2b; color:var(--rose);
+            padding:8px 10px; border-radius:8px; margin:8px 0; font-size:12px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:10px; }
   label.t { color:var(--dim); font-size:12px; display:inline-flex; align-items:center; gap:4px; }
-  .out { font-size:12px; color:var(--dim); margin-top:8px; white-space:pre-wrap; }
+  .out { font-size:12px; color:var(--dim); margin-top:8px; white-space:pre-wrap; font-family:ui-monospace,Consolas,monospace; }
   .empty { color:var(--dim); text-align:center; padding:40px; }
+  /* mascot companion — fades into the page on the right */
+  #mascot { position:fixed; right:0; bottom:0; height:min(80vh,760px); z-index:1; pointer-events:none;
+            -webkit-mask-image:linear-gradient(to left,#000 42%,transparent 94%);
+            mask-image:linear-gradient(to left,#000 42%,transparent 94%); opacity:.9; }
+  @media(max-width:1200px){ #mascot{ opacity:.25; } }
+  @media(max-width:860px){ #mascot{ display:none; } }
 </style>
 </head>
 <body>
+<img id="mascot" src="/static/mascot.jpg" alt="" onerror="this.style.display='none'">
 <header>
-  <h1>ARGUS &middot; Findings</h1>
-  <span class="sub" id="sub">review &amp; publish - nothing posts without your click</span>
+  <span class="brand">◆ <b>ARGUS</b></span>
+  <nav>
+    <a href="/panel" class="on">Findings</a>
+    <a href="/re">Reverser</a>
+    <a href="/">Console</a>
+  </nav>
+  <span class="sub" id="sub"></span>
   <span style="flex:1"></span>
-  <a href="/re" style="color:var(--cyan);text-decoration:none;margin-right:12px">◆ Reverser</a>
   <button id="autoBtn" onclick="toggleAuto()" title="Auto-publish high-confidence findings to VT + site">Autopilot: …</button>
   <button class="go" id="allBtn" onclick="publishAll()">Publish all → VT</button>
   <button onclick="load()">Refresh</button>

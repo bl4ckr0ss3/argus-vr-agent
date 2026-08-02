@@ -20,6 +20,11 @@ SITE_TAG = "Malware research · ARGUS"
 def _site_base() -> str:
     return os.environ.get("ARGUS_SITE_URL", "").strip().rstrip("/")
 
+
+_FAVICON = ("<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+            "viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d12'/%3E"
+            "%3Cpath d='M16 6l10 10-10 10L6 16z' fill='%23e0a94e'/%3E%3C/svg%3E\">")
+
 _VERDICT_LABEL = {
     "suspicious": ("SUSPICIOUS", "#e06c75"),
     "benign": ("BENIGN", "#98c379"),
@@ -194,6 +199,7 @@ def report_html(struct: dict, generated: str) -> str:
     x_url = "https://twitter.com/intent/tweet?text=" + quote(share_text) + "&url=" + quote(page_url)
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+{_FAVICON}
 <title>{_e(og_title)} — {SITE_TITLE}</title>
 <meta name="description" content="{_e(desc)}">
 <link rel="canonical" href="{_e(page_url)}">
@@ -237,6 +243,7 @@ def index_html(entries: list[dict]) -> str:
     idesc = f"{len(entries)} malware findings · threat intelligence by ARGUS."
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+{_FAVICON}
 <title>{SITE_TITLE}</title>
 <meta name="description" content="{_e(idesc)}">
 <meta property="og:type" content="website">
