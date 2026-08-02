@@ -97,15 +97,25 @@ def publish_one(draft: dict, targets: list[str]) -> dict:
 
 
 def eligible(drafts: list[dict], threshold: int) -> list[dict]:
-    """Findings clear to auto-publish: unpublished, safety-cleared, >= threshold."""
+    """Findings clear to auto-publish: unpublished, safety-cleared, >= threshold,
+    and whose sha256 hasn't already been published in ANOTHER draft (so a sample
+    re-fetched in a later round never posts a duplicate VT comment)."""
+    published_shas = {d.get("sha256") for d in drafts
+                      if d.get("status") == "published" and d.get("sha256")}
+    seen = set()
     out = []
     for d in drafts:
+        sha = d.get("sha256")
         if d.get("status") == "published":
             continue
+        if sha and (sha in published_shas or sha in seen):
+            continue  # already published, or another pending copy this pass
         if d.get("safety"):            # safety_reason non-None -> hold for review
             continue
         if (d.get("confidence") or 0) < threshold:
             continue
+        if sha:
+            seen.add(sha)
         out.append(d)
     return out
 
