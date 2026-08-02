@@ -78,11 +78,14 @@ def disassemble(data: bytes, off: int, va: int, count: int, md) -> list[dict]:
 
 
 def _flow(insn) -> str:
-    """Classify control flow for CFG/coloring: call / jmp / cjmp / ret / normal."""
+    """Classify control flow for CFG/coloring: call / jmp / cjmp / ret / normal.
+
+    `insn.groups` is read INSIDE the try — a SKIPDATA '.byte' pseudo-instruction
+    (undecodable bytes) raises CsError(CS_ERR_SKIPDATA) on any detail access."""
     if not HAVE_CAPSTONE:
         return "normal"
-    g = insn.groups
     try:
+        g = insn.groups
         if capstone.CS_GRP_CALL in g:
             return "call"
         if capstone.CS_GRP_RET in g:
