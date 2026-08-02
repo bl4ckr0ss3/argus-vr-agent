@@ -32,10 +32,10 @@ param(
     [int]$RoundDelaySec    = 300,                   # pause between rounds
     [int]$MaxRounds        = 0,                     # 0 = forever
     [string]$BatchDir      = "C:\argus-hunt\batch",
-    # Where the GUEST writes results so they reach the host (shared folder).
-    # UNC form is the most reliable across the runProgramInGuest session; must
-    # resolve to host C:\argus-results\runs (what the web Autopilot reads).
-    [string]$GuestArgusRuns= "\\vmware-host\Shared Folders\argus-results\runs",
+    # Host dir the web Autopilot reads. hunt-loop detonates guest-local and
+    # copies the drafts here (the VMware shared folder isn't reliably reachable
+    # from the runProgramInGuest session).
+    [string]$HostRunsDir   = "C:\argus-results\runs",
     [string]$Vmrun         = ""
 )
 $ErrorActionPreference = "Stop"
@@ -100,7 +100,7 @@ while ($true) {
         Write-Host "  detonating $($zips.Count) sample(s) through the VM..." -ForegroundColor Yellow
         & $huntLoop -Vmx $Vmx -Snapshot $Snapshot -SampleDir $BatchDir `
             -GuestUser $GuestUser -GuestPassword $GuestPassword -VmPassword $VmPassword `
-            -ArgusRuns $GuestArgusRuns
+            -HostRunsDir $HostRunsDir
         Write-Host "  round $round done - Autopilot will publish the strong findings" -ForegroundColor Green
     }
 

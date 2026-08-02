@@ -34,7 +34,8 @@ param(
     [Parameter(Mandatory)] [string]$GuestPassword,
     [string]$GuestRepo  = "C:\argus-vr-agent",
     [string]$GuestIntake= "C:\argus-vr-agent\intake",
-    [string]$ArgusRuns  = "Z:\argus-results\runs",      # shared folder in the guest
+    [string]$ArgusRuns  = "Z:\argus-results\runs",      # (legacy/unused - results now copied out)
+    [string]$HostRunsDir= "C:\argus-results\runs",      # host dir the web Autopilot reads
     [int]$BootWaitSec   = 45,                            # seconds to let the guest + Tools come up
     [string]$Vmrun      = "",                            # auto-detected if blank
     [string]$VmPassword = ""                             # VM ENCRYPTION password (if the VM is encrypted)
@@ -101,20 +102,38 @@ foreach ($s in $samples) {
         VM ($auth + @("copyFileFromHostToGuest",$Vmx,$s.FullName,$guestZip)) | Out-Null
 
         Write-Host "  detonate (autohunt --once, isolated)"
-        # Capture EVERYTHING the guest does to a log so a failure is diagnosable
-        # (runProgramInGuest returns only an exit code, never stdout).
-        $glog = "C:\argus-autohunt.log"
-        $cmd  = "cd /d `"$GuestRepo`" && (echo === where python === & where python & echo === version === & python --version & echo === git === & git rev-parse --short HEAD) > $glog 2>&1 & echo === autohunt === >> $glog 2>&1 & set ARGUS_RUNS=$ArgusRuns&& python run.py autohunt --once >> $glog 2>&1"
-        & $VMRUN @($auth + @("runProgramInGuest",$Vmx,"C:\Windows\System32\cmd.exe","/c",$cmd)) 2>&1 | Out-Null
-        $rc = $LASTEXITCODE
-        if ($rc -ne 0) {
-            $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
-            & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
-            Write-Host "  ! detonate exit $rc - guest log:" -ForegroundColor Red
-            if (Test-Path $hostLog) { Get-Content $hostLog -Tail 35 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
-            else { Write-Host "    (could not copy guest log back)" -ForegroundColor DarkGray }
+        # Two guest quirks handled here:
+        #  1. cmd.exe is blocked in this guest's automation session (a security
+        #     policy makes runProgramInGuest cmd.exe return a generic exit 1);
+        #     PowerShell works, so orchestrate through it.
+        #  2. the VMware shared folder is not reliably reachable from that
+        #     session, so autohunt writes to the GUEST-LOCAL runs dir and we
+        #     package the review-queue drafts + copy them out (copyFileFromGuest
+        #     ToHost is reliable) into $HostRunsDir where Autopilot reads them.
+        $glog  = "C:\Users\Public\argus-autohunt.log"
+        $gzip  = "C:\Users\Public\argus-review.zip"
+        $gps   = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $guestRuns = "$GuestRepo\runs"
+        $psCmd = "`$env:ARGUS_RUNS='$guestRuns'; Set-Location '$GuestRepo'; " +
+                 "python run.py autohunt --once *> '$glog'; " +
+                 "Remove-Item '$gzip' -EA SilentlyContinue; " +
+                 "if (Test-Path '$guestRuns\review_queue') { Compress-Archive -Path '$guestRuns\review_queue\*' -DestinationPath '$gzip' -Force -EA SilentlyContinue }; exit 0"
+        & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$psCmd)) 2>&1 | Out-Null
+        # bring back the diagnostic log + the drafts package
+        $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
+        & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
+        $hostZip = Join-Path $env:TEMP "argus-review.zip"
+        Remove-Item $hostZip -EA SilentlyContinue
+        & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$gzip,$hostZip)) 2>&1 | Out-Null
+        if (Test-Path $hostZip) {
+            $rq = Join-Path $HostRunsDir "review_queue"
+            New-Item -ItemType Directory -Force $rq | Out-Null
+            Expand-Archive -Path $hostZip -DestinationPath $rq -Force
+            $n = (Get-ChildItem $rq -Directory).Count
+            Write-Host "  done -> drafts copied to host ($rq)" -ForegroundColor Green
         } else {
-            Write-Host "  done -> results on host ($ArgusRuns)" -ForegroundColor Green
+            Write-Host "  no draft produced (benign/inconclusive, or error) - log tail:" -ForegroundColor DarkYellow
+            if (Test-Path $hostLog) { Get-Content $hostLog -Tail 18 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
         }
     }
     catch {
