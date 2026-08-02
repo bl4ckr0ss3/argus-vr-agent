@@ -44,7 +44,7 @@ def _uniq(seq):
 
 def finding_view(struct: dict) -> dict:
     """Structured, display-ready view of a finding (shared by HTML + feed)."""
-    from .publish import _IOC_DENY, _CONF_BAND
+    from .publish import _IOC_DENY, _CONF_BAND, _family, _ioc_json
     verdict = struct.get("verdict", "inconclusive")
     conf = struct.get("confidence", 0) or 0
     behaviour = {
@@ -68,9 +68,12 @@ def finding_view(struct: dict) -> dict:
                 iocs.append(_ioc.defang(v, _ioc._KIND.get(cat, cat)))
     except Exception:
         pass
+    fam = _family(struct)
     return {
         "sample": struct.get("sample") or (struct.get("sha256", "")[:16]),
         "sha256": struct.get("sha256", ""),
+        "family": fam,
+        "ioc_json": _ioc_json(struct, fam),
         "verdict": verdict,
         "confidence": conf,
         "confidence_band": _CONF_BAND(conf),
@@ -122,6 +125,11 @@ border-radius:7px;padding:4px 10px;font-size:13px}.attack .t b{color:var(--purpl
 .share button,.share a{font:13px inherit;cursor:pointer;background:var(--panel);border:1px solid var(--line);
 color:var(--ink);padding:6px 13px;border-radius:8px;text-decoration:none;transition:.12s}
 .share button:hover,.share a:hover{border-color:var(--cyan);color:var(--cyan)}
+.copybtn{float:right;font:12px inherit;cursor:pointer;background:var(--panel);border:1px solid var(--line);
+color:var(--ink);padding:2px 11px;border-radius:6px;text-transform:none;letter-spacing:0}
+.copybtn:hover{border-color:var(--cyan);color:var(--cyan)}
+.jsonioc{background:#0e1116;border:1px solid var(--line);border-radius:8px;padding:12px;overflow-x:auto;
+font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:var(--green);white-space:pre;margin:0}
 .foot{color:var(--dim);font-size:12.5px;margin-top:24px;border-top:1px solid var(--line);padding-top:14px}
 .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:14px;table-layout:fixed}
@@ -148,6 +156,8 @@ def report_html(struct: dict, generated: str) -> str:
     kv = [("Verdict", f'<span class="badge" style="background:{color}22;color:{color}">{label}</span>'
            f' &nbsp; confidence <b>{v["confidence"]}%</b> ({_e(v["confidence_band"])})'),
           ("SHA-256", f'<span class="mono">{_e(v["sha256"])}</span>')]
+    if v.get("family"):
+        kv.insert(1, ("Family", f'<b style="color:var(--amber)">{_e(v["family"])}</b>'))
     if v["packer"]:
         kv.append(("Packing", _e(v["packer"]) + (f' (entropy {_e(v["entropy"])})' if v["entropy"] else "")))
     if v["signals"]:
@@ -189,6 +199,13 @@ def report_html(struct: dict, generated: str) -> str:
         sections.append(f'<div class="card"><h2>Indicators of Compromise (defanged)</h2>'
                         f'<ul class="clean">{lis}</ul></div>')
 
+    if v.get("ioc_json"):
+        jtxt = _e(json.dumps(v["ioc_json"], indent=2))
+        sections.append(
+            '<div class="card"><h2>IOCs (JSON)'
+            '<button class="copybtn" onclick="cpj(this)">Copy</button></h2>'
+            f'<pre class="jsonioc">{jtxt}</pre></div>')
+
     sha = v["sha256"]
     sha16 = sha[:16]
     base = _site_base()
@@ -225,7 +242,8 @@ def report_html(struct: dict, generated: str) -> str:
 </div>
 {''.join(sections)}
 <div class="foot">ARGUS · 0xblack.dev</div>
-<script>function cp(b){{navigator.clipboard.writeText(location.href).then(function(){{b.textContent='✓ copied';setTimeout(function(){{b.textContent='🔗 Copy link'}},1500)}})}}</script>
+<script>function cp(b){{navigator.clipboard.writeText(location.href).then(function(){{b.textContent='✓ copied';setTimeout(function(){{b.textContent='🔗 Copy link'}},1500)}})}}
+function cpj(b){{var p=b.closest('.card').querySelector('.jsonioc');navigator.clipboard.writeText(p.textContent).then(function(){{b.textContent='✓';setTimeout(function(){{b.textContent='Copy'}},1200)}})}}</script>
 </div></body></html>"""
 
 

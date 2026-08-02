@@ -82,6 +82,7 @@ def list_drafts(limit: int = 0) -> list[dict]:
         out.append({
             "id": d.name, "status": info.get("status"),
             "sample": struct.get("sample"), "sha256": sha,
+            "family": _family(struct),
             "verdict": struct.get("verdict"), "confidence": struct.get("confidence"),
             "signals": struct.get("signals", []),
             "attack": [t.get("id") for t in struct.get("attack", [])],
@@ -289,6 +290,52 @@ def _finding_tags(struct: dict, view_family: str | None) -> list[str]:
     return out
 
 
+# Map common YARA rule-name fragments -> a clean family label (fallback when
+# MalwareBazaar didn't give us a signature).
+_YARA_FAMILIES = ("asyncrat", "redline", "formbook", "agenttesla", "remcos",
+                  "lokibot", "njrat", "quasar", "xworm", "amadey", "stealc",
+                  "lumma", "vidar", "raccoon", "snakekeylogger", "nanocore",
+                  "danabot", "smokeloader", "cobaltstrike", "salatstealer")
+
+
+def _family(struct: dict) -> str | None:
+    """Best-effort malware family: explicit field -> MalwareBazaar signature
+    (recorded at fetch) -> a YARA-derived name. None if genuinely unknown."""
+    if struct.get("family"):
+        return struct["family"]
+    sha = (struct.get("sha256") or "").strip()
+    if len(sha) == 64:
+        try:
+            from .intel.malwarebazaar import family_for
+            fam = family_for(sha)
+            if fam:
+                return fam
+        except Exception:
+            pass
+    for y in struct.get("yara") or []:
+        low = str(y).lower()
+        for fam in _YARA_FAMILIES:
+            if fam in low:
+                return fam.capitalize()
+    return None
+
+
+def _ioc_json(struct: dict, family: str | None) -> dict:
+    """A compact, publishable IOC object for defenders to copy-paste."""
+    obj = {
+        "sha256": struct.get("sha256"),
+        "family": family,
+        "verdict": struct.get("verdict"),
+        "confidence": struct.get("confidence"),
+        "signals": struct.get("signals") or [],
+        "attack": [t.get("id") for t in (struct.get("attack") or [])],
+        "network": _uniq(struct.get("net"))[:12],
+        "dropped": _uniq(struct.get("staged_payloads"))[:12],
+        "children": _uniq(struct.get("spawned"))[:12],
+    }
+    return {k: v for k, v in obj.items() if v}
+
+
 def build_vt_comment(struct: dict) -> str:
     """A structured, MalwareBazaar-style VT comment: bold labelled fields, a
     MalwareBazaar link, a link to the full 0xblack.dev analysis, a concise
@@ -304,9 +351,7 @@ def build_vt_comment(struct: dict) -> str:
     ext = sample.rsplit(".", 1)
     ftype = ext[1].lower() if len(ext) == 2 and len(ext[1]) <= 5 else "bin"
 
-    # family / signature: only a real YARA signature — never a signals blob
-    yara = struct.get("yara") or []
-    family = yara[0] if yara else None
+    family = _family(struct)
 
     L: list[str] = []
     L.append("**ARGUS Malware Analysis**")
@@ -369,6 +414,15 @@ def build_vt_comment(struct: dict) -> str:
             L.append("**IOCs (defanged):** " + ", ".join(flat[:12]))
     except Exception:
         pass
+
+    # publishable JSON IOC block — copy-paste for defenders / SIEM
+    ioc = _ioc_json(struct, family)
+    if ioc:
+        L.append("")
+        L.append("**IOCs (JSON):**")
+        L.append("```json")
+        L.append(json.dumps(ioc, separators=(",", ":")))
+        L.append("```")
 
     L.append("")
     L.append("**Tags:**")

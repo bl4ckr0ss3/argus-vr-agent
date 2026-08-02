@@ -44,6 +44,7 @@
   .b-approved { background:rgba(242,180,90,.16); color:var(--amber); }
   .b-published { background:rgba(143,191,138,.14); color:var(--sage); }
   .b-pending-review { background:rgba(242,180,90,.16); color:var(--amber); }
+  .b-family { background:rgba(121,179,196,.16); color:var(--cyan); }
   .meta { color:var(--dim); font-size:12px; margin:6px 0; font-family:ui-monospace,Consolas,monospace; }
   .meta b { color:var(--ink); font-weight:600; }
   .links { display:flex; gap:16px; flex-wrap:wrap; margin:9px 0; }
@@ -107,6 +108,7 @@ function card(d) {
   return `<div class="card" data-id="${esc(d.id)}">
     <h2>${esc(d.sample||d.id)}
       <span class="badge ${vb}">${esc(d.verdict||'?')}</span>
+      ${d.family?`<span class="badge b-family">${esc(d.family)}</span>`:''}
       <span class="badge ${sb}">${esc(d.status||'?')}</span></h2>
     <div class="meta">confidence <b>${d.confidence??'?'}%</b> &middot; signals <b>${esc((d.signals||[]).join(', ')||'-')}</b></div>
     <div class="meta">ATT&CK <b>${esc((d.attack||[]).join(', ')||'-')}</b> &middot; VirusTotal <b>${esc(d.vt||'n/a')}</b></div>
