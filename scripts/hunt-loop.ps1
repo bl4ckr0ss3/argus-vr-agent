@@ -36,7 +36,8 @@ param(
     [string]$GuestIntake= "C:\argus-vr-agent\intake",
     [string]$ArgusRuns  = "Z:\argus-results\runs",      # shared folder in the guest
     [int]$BootWaitSec   = 45,                            # seconds to let the guest + Tools come up
-    [string]$Vmrun      = ""                             # auto-detected if blank
+    [string]$Vmrun      = "",                            # auto-detected if blank
+    [string]$VmPassword = ""                             # VM ENCRYPTION password (if the VM is encrypted)
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,9 +56,18 @@ function Find-Vmrun {
 }
 
 $VMRUN = Find-Vmrun
-$auth  = @("-T", "ws", "-gu", $GuestUser, "-gp", $GuestPassword)
+# Base options on EVERY vmrun call. -vp is the VM ENCRYPTION password (required
+# for encrypted VMs); without it vmrun prompts interactively and the script hangs.
+$base  = @("-T", "ws")
+if ($VmPassword) { $base += @("-vp", $VmPassword) }
+$auth  = $base + @("-gu", $GuestUser, "-gp", $GuestPassword)
 
-function VM([string[]]$vmArgs) { & $VMRUN @vmArgs }
+function VM([string[]]$vmArgs) {
+    $out = & $VMRUN @vmArgs 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ("vmrun failed: " + ($out -join ' ')) }
+    $out
+}
+function VMquiet([string[]]$vmArgs) { & $VMRUN @vmArgs 2>&1 | Out-Null }
 
 $samples = Get-ChildItem -Path $SampleDir -Filter *.zip -File
 if (-not $samples) { Write-Host "No .zip samples in $SampleDir"; exit 1 }
@@ -67,9 +77,9 @@ foreach ($s in $samples) {
     Write-Host "`n--- $($s.Name) ---" -ForegroundColor Yellow
     try {
         Write-Host "  revert -> $Snapshot"
-        VM @("-T","ws","revertToSnapshot",$Vmx,$Snapshot) | Out-Null
+        VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
         Write-Host "  start (headless)"
-        VM @("-T","ws","start",$Vmx,"nogui") | Out-Null
+        VM ($base + @("start",$Vmx,"nogui")) | Out-Null
         Start-Sleep -Seconds $BootWaitSec        # let the guest + VMware Tools come up
 
         $guestZip = Join-Path $GuestIntake $s.Name
@@ -87,11 +97,11 @@ foreach ($s in $samples) {
     }
     finally {
         # always return to a clean snapshot before the next sample
-        VM @("-T","ws","revertToSnapshot",$Vmx,$Snapshot) 2>$null | Out-Null
+        VMquiet ($base + @("revertToSnapshot",$Vmx,$Snapshot))
     }
 }
 
 # leave the VM at the clean baseline, powered off
-VM @("-T","ws","stop",$Vmx,"hard") 2>$null | Out-Null
+VMquiet ($base + @("stop",$Vmx,"hard"))
 Write-Host "`n== hunt-loop complete. Results in $ArgusRuns ==" -ForegroundColor Cyan
 Write-Host "Review:  (on host) python run.py autohunt --reviews   / open the run folders"
