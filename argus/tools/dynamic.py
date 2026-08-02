@@ -130,20 +130,40 @@ def _filesystem_snapshot(label: str, out_dir: Path, target_dirs: list[str]) -> P
     return path
 
 
+def _local_capture_dir() -> Path:
+    d = Path(tempfile.gettempdir()) / "argus_capture"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def _start_procmon_capture(out_dir: Path) -> dict:
-    """Start Process Monitor capture in the background. Returns handle info."""
-    log_path = out_dir / "procmon.pml"
-    # procmon /BackingFile <path> /Quiet /AcceptEula starts capture
-    cmd = f'procmon /BackingFile "{log_path}" /Quiet /AcceptEula /Minimized'
+    """Start Process Monitor capture. The backing file is written to LOCAL disk —
+    procmon corrupts a .pml if it captures directly to a network/shared folder
+    (ARGUS_RUNS on a VMware share). The finished file is copied to out_dir on stop."""
+    local_pml = _local_capture_dir() / "procmon.pml"
+    try:
+        local_pml.unlink(missing_ok=True)  # drop any stale capture
+    except OSError:
+        pass
+    cmd = f'procmon /BackingFile "{local_pml}" /Quiet /AcceptEula /Minimized'
     proc = subprocess.Popen(cmd, shell=True)
     time.sleep(3)  # give procmon time to start
-    return {"pid": proc.pid, "log": str(log_path), "command": cmd}
+    return {"pid": proc.pid, "log_local": str(local_pml),
+            "log": str(out_dir / "procmon.pml"), "command": cmd}
 
 
-def _stop_procmon_capture() -> str:
-    """Stop Process Monitor and convert to CSV."""
+def _stop_procmon_capture(handle: dict | None = None) -> str:
+    """Stop Process Monitor and copy the (now-closed) local .pml into out_dir.
+    A one-time copy to a share is safe; only live capture to a share corrupts."""
     _safe_exec("procmon /Terminate", timeout=10)
     time.sleep(2)
+    if handle and handle.get("log_local") and handle.get("log"):
+        try:
+            src = Path(handle["log_local"])
+            if src.exists() and src.stat().st_size > 0:
+                shutil.copy2(src, handle["log"])
+        except Exception:
+            pass
     return "procmon terminated"
 
 
@@ -429,6 +449,11 @@ def _diff_new_lines(before: Path, after: Path, extra_noise: tuple = ()) -> list[
 def _procmon_to_csv(out_dir: Path) -> Path | None:
     """Convert the procmon .pml to CSV headlessly. Returns the CSV path or None."""
     pml = out_dir / "procmon.pml"
+    # Prefer the local capture copy — faster, and avoids reading a big .pml back
+    # from a network share (out_dir may be ARGUS_RUNS on a VMware shared folder).
+    local_pml = _local_capture_dir() / "procmon.pml"
+    if local_pml.exists() and local_pml.stat().st_size > 0:
+        pml = local_pml
     if not pml.exists() or pml.stat().st_size == 0:
         return None
     csv_path = out_dir / "procmon.csv"
@@ -848,7 +873,7 @@ def run_detonation(sample, timeout: int = _MAX_EXECUTION_SECONDS, on_progress=No
 
     # Stage 5: Stop monitoring
     emit("[5/6] Stopping monitoring (flushing procmon + pcap)...")
-    _stop_procmon_capture()
+    _stop_procmon_capture(procmon)
     _stop_network_capture(net_proc)
     _stop_fakenet(fakenet)
     time.sleep(3)
