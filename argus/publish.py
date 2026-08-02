@@ -386,6 +386,10 @@ def build_vt_comment(struct: dict) -> str:
     if url:
         L.append(f"**Full Analysis:** {url}")
 
+    if struct.get("analyst_summary"):
+        L.append("")
+        L.append("**Analysis:** " + struct["analyst_summary"])
+
     # concise behaviour block
     spawned = _uniq(struct.get("spawned"))
     drops = _uniq(struct.get("staged_payloads"))

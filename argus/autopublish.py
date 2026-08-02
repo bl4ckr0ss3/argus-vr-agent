@@ -15,6 +15,7 @@ Config (environment):
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -65,6 +66,21 @@ def publish_one(draft: dict, targets: list[str]) -> dict:
     struct = info.get("struct", {}) or {}
     out = {"id": draft_id, "sample": draft.get("sample") or draft_id, "targets": {}}
     ok_any = False
+
+    # Optional AI analyst narrative — generate ONCE and cache into the draft so
+    # both the site report and the VT comment pick it up. Off unless
+    # ARGUS_ANALYST=1 + an LLM key on the host.
+    try:
+        from . import analyst
+        if analyst.enabled() and not struct.get("analyst_summary"):
+            struct.setdefault("family", publish._family(struct))
+            summary = analyst.summarize(struct)
+            if summary:
+                struct["analyst_summary"] = summary
+                (publish._resolve(draft_id) / "findings.json").write_text(
+                    json.dumps(struct, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
     # Publish the site report FIRST so the VT comment's "Full Analysis" link is
     # already live when the comment goes out.

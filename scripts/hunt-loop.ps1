@@ -90,7 +90,7 @@ foreach ($s in $samples) {
         # in, so the baseline MUST auto-login. Poll instead of a fixed sleep.
         Write-Host "  waiting for desktop session (auto-login)..."
         $sessionUp = $false
-        $deadline = (Get-Date).AddSeconds([Math]::Max($BootWaitSec, 150))
+        $deadline = (Get-Date).AddSeconds([Math]::Max($BootWaitSec, 240))
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 6
             $procs = (& $VMRUN @($auth + @("listProcessesInGuest",$Vmx)) 2>&1) -join "`n"

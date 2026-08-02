@@ -73,6 +73,7 @@ def finding_view(struct: dict) -> dict:
         "sample": struct.get("sample") or (struct.get("sha256", "")[:16]),
         "sha256": struct.get("sha256", ""),
         "family": fam,
+        "analyst_summary": struct.get("analyst_summary"),
         "ioc_json": _ioc_json(struct, fam),
         "verdict": verdict,
         "confidence": conf,
@@ -167,6 +168,10 @@ def report_html(struct: dict, generated: str) -> str:
                    f'<a href="https://www.virustotal.com/gui/file/{_e(v["sha256"])}" target="_blank" rel="noopener">view on VT</a>'))
     kvhtml = "".join(f'<div class="k">{k}</div><div class="v">{val}</div>' for k, val in kv)
     sections.append(f'<div class="card"><h2>Summary</h2><div class="kv">{kvhtml}</div></div>')
+
+    if v.get("analyst_summary"):
+        sections.append('<div class="card"><h2>Analysis</h2>'
+                        f'<p style="margin:0">{_e(v["analyst_summary"])}</p></div>')
 
     sections.append('<div class="card"><h2>Methodology</h2><p style="margin:0">The sample was '
                     'executed in an isolated, instrumented Windows VM (host-only networking with '
