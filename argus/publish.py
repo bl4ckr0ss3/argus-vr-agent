@@ -394,6 +394,22 @@ def post_vt_comment(struct: dict, dry_run: bool = True) -> dict:
 _ADAPTERS = {"twitter": "post_twitter", "linkedin": "post_linkedin", "vt": "post_vt_comment"}
 
 
+def build_tweet(struct: dict) -> str:
+    """A shareable tweet that LINKS the 0xblack.dev report, so X renders its
+    OpenGraph card. Kept under 280 chars."""
+    from . import site_publish
+    verdict = struct.get("verdict", "inconclusive")
+    conf = struct.get("confidence", 0) or 0
+    sample = struct.get("sample") or (struct.get("sha256", "")[:16])
+    if len(sample) > 46:
+        sample = sample[:43] + "..."
+    label = {"suspicious": "SUSPICIOUS", "benign": "BENIGN"}.get(verdict, verdict.upper())
+    url = site_publish.analysis_url(struct.get("sha256", ""))
+    head = f"New malware finding: {sample} — {label} ({conf}%). Analysis by ARGUS."
+    parts = [head] + ([url] if url else []) + ["#malware #DFIR #threatintel"]
+    return " ".join(parts)[:280]
+
+
 # ---------------------------------------------------------------------------
 # orchestration
 # ---------------------------------------------------------------------------
@@ -416,7 +432,7 @@ def publish(draft: str, targets: list[str], confirm: bool = False,
                                         f"Override only if you are certain: add --force"}
 
     dry = not confirm
-    tweet = info["tweet"] or (struct.get("verdict_text", ""))
+    tweet = build_tweet(struct)  # links the 0xblack.dev report for a card preview
     results = []
     for t in targets:
         if t == "twitter":

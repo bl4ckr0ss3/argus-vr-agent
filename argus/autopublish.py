@@ -76,13 +76,19 @@ def publish_one(draft: dict, targets: list[str]) -> dict:
         else:
             out["targets"]["site"] = r.get("error", "failed")
 
-    if "vt" in targets:
+    # Everything the publish pipeline handles (vt comment+vote, twitter, linkedin).
+    pub_targets = [t for t in targets if t in ("vt", "twitter", "linkedin")]
+    if pub_targets:
         publish.approve(draft_id)  # safety gate still enforced inside publish()
-        r = publish.publish(draft_id, ["vt"], confirm=True, force=False)
-        res = (r.get("results") or [{}])[0]
-        ok = bool(res.get("ok") and not res.get("skipped"))
-        out["targets"]["vt"] = "posted" if ok else (r.get("blocked") or res.get("detail", "skipped"))
-        ok_any = ok_any or ok
+        r = publish.publish(draft_id, pub_targets, confirm=True, force=False)
+        if r.get("blocked"):
+            for t in pub_targets:
+                out["targets"][t] = r["blocked"]
+        for res in r.get("results", []):
+            tgt = res.get("target", "?")
+            ok = bool(res.get("ok") and not res.get("skipped"))
+            out["targets"][tgt] = "posted" if ok else res.get("detail", "skipped")
+            ok_any = ok_any or ok
 
     if ok_any:
         _mark_published(draft_id)
