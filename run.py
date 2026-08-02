@@ -93,6 +93,13 @@ def cmd_autopublish(args) -> None:
     cfg = autopublish.settings()
     print(f"autopublish — threshold >={cfg['threshold']}% · targets {cfg['targets']}")
     print(f"  site: {site_publish.status()}")
+    if getattr(args, "backfill_site", False):
+        r = autopublish.backfill_site(dry=args.dry)
+        print(f"  site backfill: {r['published']}/{r['eligible']} report(s) "
+              f"{'(dry run)' if args.dry else 'published'}, pushed={r.get('pushed')}")
+        for x in r["results"][:60]:
+            print(f"    - {str(x.get('sample'))[:44]}  {x.get('url') or ('would publish' if args.dry else 'failed')}")
+        return
     if args.once or args.dry:
         r = autopublish.scan_once(dry=args.dry)
         print(f"  eligible: {r['eligible']}  published: {r.get('published_now', 0)}  "
@@ -737,6 +744,7 @@ def main() -> None:
     pap2 = sub.add_parser("autopublish", help="auto-publish high-confidence findings to VT + site")
     pap2.add_argument("--once", action="store_true", help="one scan then exit")
     pap2.add_argument("--dry", action="store_true", help="show what would publish, post nothing")
+    pap2.add_argument("--backfill-site", action="store_true", help="publish site reports for ALL existing findings (seed the website)")
     pap2.set_defaults(func=cmd_autopublish)
 
     pap = sub.add_parser("app", help="launch the native desktop application window")

@@ -104,6 +104,41 @@ def eligible(drafts: list[dict], threshold: int) -> list[dict]:
     return out
 
 
+def backfill_site(dry: bool = False) -> dict:
+    """Publish a SITE report for every suspicious, safety-cleared finding —
+    regardless of VT-published status — to seed the website with existing work.
+    Site-only (no VT re-posting); idempotent per sha256, one git push at the end."""
+    import os as _os
+    prev = _os.environ.get("ARGUS_SITE_PUSH")
+    _os.environ["ARGUS_SITE_PUSH"] = "0"      # commit each, push once at the end
+    results, published = [], 0
+    try:
+        for d in publish.list_drafts():
+            if d.get("verdict") != "suspicious" or d.get("safety"):
+                continue
+            if dry:
+                results.append({"sample": d.get("sample"), "would_publish": True})
+                continue
+            info = publish.load_draft(d["id"])
+            r = site_publish.publish_finding(info.get("struct", {}) or {})
+            results.append({"sample": d.get("sample"), "ok": r.get("ok"),
+                            "url": r.get("url") or r.get("error")})
+            if r.get("ok"):
+                published += 1
+    finally:
+        if prev is None:
+            _os.environ.pop("ARGUS_SITE_PUSH", None)
+        else:
+            _os.environ["ARGUS_SITE_PUSH"] = prev
+    pushed = None
+    if not dry and published and site_publish._cfg()["push"]:
+        c = site_publish._cfg()
+        code, msg = site_publish._git(c["dir"], "push", *( ["origin", c["branch"]] if c["branch"] else []), timeout=180)
+        pushed = code == 0
+    return {"eligible": len(results), "published": published, "pushed": pushed,
+            "dry_run": dry, "results": results}
+
+
 def scan_once(dry: bool = False) -> dict:
     cfg = settings()
     targets = cfg["targets"]
