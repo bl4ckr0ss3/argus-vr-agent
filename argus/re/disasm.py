@@ -43,6 +43,19 @@ def make_engine(arch: str, bits: int):
     return md
 
 
+def make_fast_engine(arch: str, bits: int):
+    """A detail-OFF engine for the linear discovery sweep — capstone is several
+    times faster without per-instruction group/operand decoding. Targets are
+    parsed from op_str text instead."""
+    spec = _cs_mode(arch, bits)
+    if not spec:
+        return None
+    md = capstone.Cs(*spec)
+    md.detail = False
+    md.skipdata = True
+    return md
+
+
 def disassemble(data: bytes, off: int, va: int, count: int, md) -> list[dict]:
     """Disassemble up to `count` instructions from file offset `off` (which maps
     to virtual address `va`). Returns rows the UI renders directly."""

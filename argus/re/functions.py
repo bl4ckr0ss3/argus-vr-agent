@@ -12,17 +12,31 @@ enough to populate the function list, xrefs, and per-function CFG the UI wants.
 """
 from __future__ import annotations
 
+import re
+import time
+
 from . import container as C
 from . import disasm as D
 
 _MAX_FUNC_INSNS = 4000
+_HEXOP = re.compile(r"^0x[0-9a-fA-F]+$")
+
+
+# Bound worst-case work on huge / packed .text so load stays snappy.
+_SWEEP_INSN_CAP = 1_500_000
+_SWEEP_BUDGET_S = 3.5
+_MAX_FUNCTIONS = 8000
 
 
 def discover(binary: dict, data: bytes, md) -> dict:
-    """Return {functions:[{addr,name,size}], xrefs:{addr:[from,...]}}."""
+    """Return {functions:[{addr,name,size}], xrefs:{addr:[from,...]}}.
+
+    Fast path: ONE linear disassembly sweep of each code section collects every
+    direct call/jmp target (function candidates + xrefs) in a single pass — far
+    cheaper than recursively walking every function (which overlaps massively).
+    Prologue detection + symbols fill in starts the sweep can't reach."""
     code = C.code_sections(binary)
     if not code or md is None:
-        # No disassembler: still surface symbol-based functions so the list works.
         return {"functions": _symbol_functions(binary), "xrefs": {}}
 
     named = {s["addr"]: s["name"] for s in binary["symbols"]
@@ -32,40 +46,54 @@ def discover(binary: dict, data: bytes, md) -> dict:
     if binary.get("entry"):
         named.setdefault(binary["entry"], "entry")
 
-    seeds = set(named)
+    func_addrs = set(named)
     if binary.get("entry"):
-        seeds.add(binary["entry"])
-    # Stripped binaries (most malware) have almost no named functions. Seed the
-    # sweep with prologue-detected starts so the function list is actually rich.
-    seeds |= _prologue_scan(binary, data, md)
+        func_addrs.add(binary["entry"])
+    func_addrs |= _prologue_scan(binary, data, md)
 
     xrefs: dict[int, list[int]] = {}
-    func_addrs = set(seeds)
-    # follow direct branches to find more function starts (calls only -> starts)
-    visited_scan = set()
-    worklist = list(seeds)
-    while worklist:
-        fa = worklist.pop()
-        if fa in visited_scan:
-            continue
-        visited_scan.add(fa)
-        for ins in _walk(binary, data, md, fa):
-            tgt = ins.get("target")
-            if tgt is None:
-                continue
-            xrefs.setdefault(tgt, [])
-            if ins["addr"] not in xrefs[tgt]:
-                xrefs[tgt].append(ins["addr"])
-            if ins["flow"] == "call" and _in_code(binary, tgt):
-                if tgt not in func_addrs:
-                    func_addrs.add(tgt)
-                    worklist.append(tgt)
+    code_ranges = [(s["va"], s["va"] + max(s["vsize"], s["rawsize"])) for s in code]
 
+    def in_code(va):
+        return any(lo <= va < hi for lo, hi in code_ranges)
+
+    # Fast, detail-off linear sweep. Direct call/jmp targets are read straight
+    # from op_str text ("call 0x1400..") — no operand decoding needed.
+    fast = D.make_fast_engine(binary["arch"], binary["bits"]) or md
+    seen = 0
+    deadline = time.monotonic() + _SWEEP_BUDGET_S
+    for s in code:
+        raw = data[s["rawptr"]:s["rawptr"] + s["rawsize"]]
+        for ins in fast.disasm(raw, s["va"]):
+            seen += 1
+            if seen % 20000 == 0 and time.monotonic() > deadline:
+                seen = _SWEEP_INSN_CAP + 1
+                break
+            if seen > _SWEEP_INSN_CAP:
+                break
+            mn = ins.mnemonic
+            is_call = mn == "call"
+            if not (is_call or (mn and mn[0] == "j")):
+                continue
+            ops = ins.op_str
+            if not _HEXOP.match(ops):
+                continue
+            tgt = int(ops, 16)
+            lst = xrefs.get(tgt)
+            if lst is None:
+                xrefs[tgt] = [ins.address]
+            elif len(lst) < 64 and ins.address not in lst:
+                lst.append(ins.address)
+            if is_call and in_code(tgt):
+                func_addrs.add(tgt)
+        if seen > _SWEEP_INSN_CAP:
+            break
+
+    ordered = sorted(func_addrs)[:_MAX_FUNCTIONS]
     functions = []
-    ordered = sorted(func_addrs)
     for i, addr in enumerate(ordered):
-        end = ordered[i + 1] if i + 1 < len(ordered) else None
-        size = _func_size(binary, data, md, addr, end)
+        nxt = ordered[i + 1] if i + 1 < len(ordered) else None
+        size = min(nxt - addr, 0x4000) if nxt and nxt > addr else 0
         functions.append({
             "addr": addr,
             "name": named.get(addr) or f"FUN_{addr:08x}",
@@ -147,20 +175,6 @@ def _walk(binary, data, md, addr, cap=_MAX_FUNC_INSNS):
         if r["flow"] == "jmp" and r["target"] is None:
             break
     return out
-
-
-def _func_size(binary, data, md, addr, hard_end):
-    off = C.va_to_off(binary, addr)
-    if off is None:
-        return 0
-    rows = _walk(binary, data, md, addr)
-    if not rows:
-        return 0
-    last = rows[-1]
-    end = last["addr"] + last["size"]
-    if hard_end and end > hard_end:
-        end = hard_end
-    return max(0, end - addr)
 
 
 def function_disasm(binary, data, md, addr) -> list[dict]:

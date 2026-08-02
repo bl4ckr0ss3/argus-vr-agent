@@ -189,7 +189,7 @@ tbody tr.sel{background:var(--sel);box-shadow:inset 2px 0 0 var(--amber)}
   <aside class="rail">
     <div class="pane" style="flex:1.1">
       <div class="pane-h">Sections <span class="x">✕</span></div>
-      <div class="filter"><input id="secF" placeholder="Filter" oninput="renderSections()"></div>
+      <div class="filter"><input id="secF" placeholder="Filter"></div>
       <div class="scroll">
         <table><thead><tr><th>ADDRESS</th><th>NAME</th><th>TYPE</th><th>PERM</th><th>SIZE</th></tr></thead>
         <tbody id="secB"></tbody></table>
@@ -197,12 +197,12 @@ tbody tr.sel{background:var(--sel);box-shadow:inset 2px 0 0 var(--amber)}
     </div>
     <div class="pane grow">
       <div class="pane-h">Functions <span class="cnt" id="funCnt"></span> <span class="x">✕</span></div>
-      <div class="filter"><input id="funF" placeholder="Filter (name / hex addr)" oninput="renderFunctions()"></div>
+      <div class="filter"><input id="funF" placeholder="Filter (name / hex addr)"></div>
       <div class="scroll"><ul class="flist" id="funB"></ul></div>
     </div>
     <div class="pane" style="flex:1">
       <div class="pane-h">Symbols <span class="x">✕</span></div>
-      <div class="filter"><input id="symF" placeholder="Filter" oninput="renderSymbols()"></div>
+      <div class="filter"><input id="symF" placeholder="Filter"></div>
       <div class="scroll">
         <table><thead><tr><th>ADDRESS</th><th>NAME</th><th>TYPE</th></tr></thead>
         <tbody id="symB"></tbody></table>
@@ -309,13 +309,14 @@ function ready(sum){
   if(sum.have_disasm){ dot.classList.remove('off'); txt.textContent='capstone '+sum.arch; }
   else{ dot.classList.add('off'); txt.textContent='no capstone'; }
   document.getElementById('asmArch').value=sum.arch;
+  S.stringsLoaded=false;
+  document.getElementById('strB').innerHTML='<div class="empty">click Strings to load</div>';
   Promise.all([
     api('/api/re/sections?id='+S.sid).then(r=>{S.sections=r.sections||[];renderSections();}),
     api('/api/re/functions?id='+S.sid).then(r=>{S.functions=r.functions||[];renderFunctions();}),
     api('/api/re/symbols?id='+S.sid).then(r=>{S.symbols=r.symbols||[];renderSymbols();}),
     api('/api/re/imports?id='+S.sid).then(r=>{S.imports=r.imports||[];renderImports();}),
     api('/api/re/exports?id='+S.sid).then(r=>{S.exports=r.exports||[];renderExports();}),
-    api('/api/re/strings?id='+S.sid).then(r=>{S.strings=r.strings||[];renderStrings();}),
   ]);
   renderMeta(sum);
   if(sum.counts.functions){ /* auto-open first named or entry */
@@ -324,52 +325,50 @@ function ready(sum){
   } else { document.getElementById('v-disasm').innerHTML='<div class="empty">No functions discovered (need capstone, or unknown format).</div>'; }
 }
 
-/* ---------- rail: sections ---------- */
+/* debounce so filtering a big list doesn't re-render on every keystroke */
+function debounce(fn,ms){let t;return()=>{clearTimeout(t);t=setTimeout(fn,ms);};}
+const RENDER_CAP=2500;   // cap rail rows for snappy DOM
+
+/* ---------- rail: sections (single innerHTML + delegation) ---------- */
 function renderSections(){
   const q=document.getElementById('secF').value.toLowerCase();
-  const b=document.getElementById('secB'); b.innerHTML='';
+  let h='';
   for(const s of S.sections){
     if(q && !(s.name.toLowerCase().includes(q)||hex(s.va).includes(q))) continue;
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td class="addr">${hex(s.va)}</td><td class="nm">${esc(s.name)}</td>`+
-      `<td class="ty">${esc(s.type)}</td><td class="addr">${esc(s.perm)}</td><td class="addr">${s.rawsize}</td>`;
-    tr.onclick=()=>{ document.getElementById('hexOff').value=s.rawptr; S.hexOff=s.rawptr; tab('hex'); loadHex(); };
-    b.appendChild(tr);
+    h+=`<tr data-off="${s.rawptr}"><td class="addr">${hex(s.va)}</td><td class="nm">${esc(s.name)}</td>`+
+      `<td class="ty">${esc(s.type)}</td><td class="addr">${esc(s.perm)}</td><td class="addr">${s.rawsize}</td></tr>`;
   }
+  document.getElementById('secB').innerHTML=h;
 }
 /* ---------- rail: functions ---------- */
 function renderFunctions(){
   const q=document.getElementById('funF').value.toLowerCase();
-  const b=document.getElementById('funB'); b.innerHTML='';
-  let shown=0;
+  let h='',shown=0,capped=0;
   for(const f of S.functions){
     if(q && !(f.name.toLowerCase().includes(q)||hex(f.addr).includes(q))) continue;
     shown++;
-    const li=document.createElement('li');
-    li.dataset.addr=f.addr;
+    if(shown>RENDER_CAP){capped++;continue;}
     const named=!f.name.startsWith('FUN_');
-    li.innerHTML=`<span class="fa">${hex(f.addr)}</span><span class="fn ${named?'named':''}">${esc(f.name)}</span>`;
-    li.onclick=()=>selectFunc(f.addr);
-    if(S.cur===f.addr) li.classList.add('sel');
-    b.appendChild(li);
+    h+=`<li data-addr="${f.addr}"${S.cur===f.addr?' class="sel"':''}><span class="fa">${hex(f.addr)}</span>`+
+       `<span class="fn ${named?'named':''}">${esc(f.name)}</span></li>`;
   }
+  if(capped) h+=`<li style="color:var(--dim);cursor:default">… +${capped} more (filter to narrow)</li>`;
+  document.getElementById('funB').innerHTML=h;
   document.getElementById('funCnt').textContent=`(${shown} / ${S.functions.length})`;
 }
 /* ---------- rail: symbols ---------- */
 function renderSymbols(){
   const q=document.getElementById('symF').value.toLowerCase();
-  const b=document.getElementById('symB'); b.innerHTML='';
-  let n=0;
+  let h='',n=0,capped=0;
   for(const s of S.symbols){
     if(q && !s.name.toLowerCase().includes(q)) continue;
-    if(++n>4000) break;
-    const tr=document.createElement('tr');
+    if(++n>RENDER_CAP){capped++;continue;}
     const ext=s.type==='external';
-    tr.innerHTML=`<td class="addr">${s.addr?hex(s.addr):'0x0'}</td>`+
-      `<td class="${ext?'ext':'nm'}">${esc(s.name)}</td><td class="ty">${esc(s.type)}</td>`;
-    if(s.addr) tr.onclick=()=>selectFunc(s.addr);
-    b.appendChild(tr);
+    h+=`<tr${s.addr?` data-addr="${s.addr}"`:''}><td class="addr">${s.addr?hex(s.addr):'0x0'}</td>`+
+      `<td class="${ext?'ext':'nm'}">${esc(s.name)}</td><td class="ty">${esc(s.type)}</td></tr>`;
   }
+  if(capped) h+=`<tr><td colspan="3" style="color:var(--dim)">… +${capped} more (filter to narrow)</td></tr>`;
+  document.getElementById('symB').innerHTML=h;
 }
 
 /* ---------- select function -> disasm + decompile ---------- */
@@ -459,6 +458,11 @@ function tab(t){
 function btab(b){
   document.querySelectorAll('.dock .tabs button').forEach(x=>x.classList.toggle('on',x.dataset.b===b));
   document.querySelectorAll('.dock .view').forEach(v=>v.classList.toggle('on',v.id==='b-'+b));
+  if(b==='strings' && S.sid && !S.stringsLoaded){
+    S.stringsLoaded=true;
+    document.getElementById('strB').innerHTML='<div class="spin">loading strings…</div>';
+    api('/api/re/strings?id='+S.sid).then(r=>{S.strings=r.strings||[];renderStrings();});
+  }
 }
 
 /* ---------- metadata ---------- */
@@ -540,8 +544,11 @@ function renderExports(){
     `<li onclick="selectFunc(${e.addr})"><span class="a">${hex(e.addr)}</span><span class="t">${esc(e.name)}</span></li>`).join('')||'<div class="empty">none</div>';
 }
 function renderStrings(){
-  document.getElementById('strB').innerHTML=S.strings.map(s=>
-    `<li onclick="document.getElementById('hexOff').value=${s.off};tab('hex');loadHex()"><span class="a">${s.va?hex(s.va):hex(s.off)}</span><span class="t">${esc(s.text)}</span></li>`).join('')||'<div class="empty">none</div>';
+  const list=S.strings.slice(0,1500);
+  let h=list.map(s=>
+    `<li onclick="document.getElementById('hexOff').value=${s.off};tab('hex');loadHex()"><span class="a">${s.va?hex(s.va):hex(s.off)}</span><span class="t">${esc(s.text)}</span></li>`).join('');
+  if(S.strings.length>1500) h+=`<li style="color:var(--dim)">… +${S.strings.length-1500} more</li>`;
+  document.getElementById('strB').innerHTML=h||'<div class="empty">none</div>';
 }
 
 /* ---------- assembler ---------- */
@@ -555,7 +562,25 @@ async function assemble(){
   else{ out.className='out err'; out.textContent=r.error; }
 }
 
+/* ---------- event delegation (one listener per list, not per row) ---------- */
+function wire(){
+  document.getElementById('secB').addEventListener('click',e=>{
+    const tr=e.target.closest('tr[data-off]'); if(!tr) return;
+    document.getElementById('hexOff').value=tr.dataset.off; S.hexOff=+tr.dataset.off; tab('hex'); loadHex();
+  });
+  document.getElementById('funB').addEventListener('click',e=>{
+    const li=e.target.closest('li[data-addr]'); if(li) selectFunc(+li.dataset.addr);
+  });
+  document.getElementById('symB').addEventListener('click',e=>{
+    const tr=e.target.closest('tr[data-addr]'); if(tr) selectFunc(+tr.dataset.addr);
+  });
+  document.getElementById('secF').addEventListener('input',debounce(renderSections,150));
+  document.getElementById('funF').addEventListener('input',debounce(renderFunctions,180));
+  document.getElementById('symF').addEventListener('input',debounce(renderSymbols,180));
+}
+
 /* boot */
+wire();
 (async()=>{ const st=await api('/api/re/status');
   if(!st.have_capstone) document.getElementById('csTxt').textContent='pip install capstone'; })();
 </script>
