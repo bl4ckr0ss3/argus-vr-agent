@@ -65,8 +65,11 @@ Write-Host "  vmrun: $VMRUN"
 Write-Host "  checking snapshots..."
 $snaps = & $VMRUN @base listSnapshots $Vmx 2>&1
 if ($LASTEXITCODE -ne 0) { throw "vmrun/listSnapshots failed (wrong -VmPassword?): $snaps" }
-if ($snaps -notmatch [regex]::Escape($Snapshot)) {
-    throw "Snapshot '$Snapshot' not found. Snapshots: $snaps"
+# NOTE: join to a single string first — `-notmatch` on an ARRAY returns the
+# non-matching elements (truthy), not a boolean, so it would false-negative.
+$snapText = ($snaps | Out-String)
+if ($snapText -notmatch [regex]::Escape($Snapshot)) {
+    throw "Snapshot '$Snapshot' not found. Snapshots: $snapText"
 }
 Write-Host "  snapshot '$Snapshot' present" -ForegroundColor Green
 Write-Host "  encryption password accepted; guest '$GuestUser'" -ForegroundColor Green
