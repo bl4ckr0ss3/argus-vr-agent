@@ -261,7 +261,7 @@ def _short(s, n: int = 90) -> str:
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def _cap_ioc(ioc: dict, n: int = 88) -> dict:
+def _cap_ioc(ioc: dict, n: int = 68) -> dict:
     out = {}
     for k, v in ioc.items():
         if isinstance(v, list):
