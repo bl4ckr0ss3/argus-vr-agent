@@ -922,6 +922,19 @@ def _guard_binding(host: str) -> None:
             "reach it over an SSH tunnel / Tailscale.")
 
 
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """Don't dump a traceback when a client hangs up mid-response — routine with a
+    dashboard that polls every few seconds and refreshes (WinError 10053 /
+    ECONNRESET / broken pipe). Genuine errors still propagate to the default logger."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return  # client went away before we finished writing — nothing to do
+        super().handle_error(request, client_address)
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765):
     _load_dotenv()
     _guard_binding(host)
@@ -933,7 +946,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765):
         autopublish.maybe_autostart()  # opt-in via ARGUS_AUTOPUBLISH=1
     except Exception as e:
         print(f"  (autopublish not started: {e})")
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = _QuietThreadingHTTPServer((host, port), Handler)
     auth = "TOKEN AUTH ON" if config.WEB_TOKEN else ("open (localhost only)" if host in _LOCAL_HOSTS else "OPEN — no token!")
     print(f"ARGUS console -> http://{host}:{port}  [{auth}]  (Ctrl+C to stop)")
     if config.WEB_TOKEN:
@@ -954,7 +967,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPSer
     _load_dotenv()
     _guard_binding(host)
     get_index()
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = _QuietThreadingHTTPServer((host, port), Handler)
     print(f"ARGUS console -> http://{host}:{port}"
           + ("  [TOKEN AUTH ON]" if config.WEB_TOKEN else ""))
     return httpd
