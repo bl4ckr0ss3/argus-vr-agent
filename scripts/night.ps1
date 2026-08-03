@@ -40,12 +40,12 @@ if (-not (Test-Path $Vmx)) { throw "VMX not found: $Vmx" }
 
 Write-Host "== ARGUS sleep mode ==" -ForegroundColor Cyan
 Write-Host "  starting web console + Autopilot ..." -ForegroundColor DarkGray
-Start-Process powershell -ArgumentList @("-NoExit", "-Command", "& '$here\serve.ps1'")
+Start-Process powershell -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", "& '$here\serve.ps1'")
 
 Start-Sleep -Seconds 5   # let the server bind before the hunter starts feeding it
 
 Write-Host "  starting the autonomous hunter ..." -ForegroundColor DarkGray
-Start-Process powershell -ArgumentList @("-NoExit", "-Command", "& '$here\autonomous.ps1' -Vmx '$Vmx' -VmPassword ''")
+Start-Process powershell -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", "& '$here\autonomous.ps1' -Vmx '$Vmx' -VmPassword ''")
 
 Write-Host ""
 Write-Host "== ARGUS is running overnight. Sleep well. ==" -ForegroundColor Green
