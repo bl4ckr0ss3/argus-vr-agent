@@ -177,27 +177,50 @@ def scan_once(dry: bool = False) -> dict:
     drafts = publish.list_drafts()
     todo = eligible(drafts, cfg["threshold"])
     results = []
-    for d in todo:
-        if dry:
-            results.append({"id": d["id"], "sample": d.get("sample"),
-                            "confidence": d.get("confidence"), "would_publish": True})
-            continue
-        r = publish_one(d, targets)
-        results.append(r)
-        with _lock:
-            if r["ok"]:
-                _state["published"] += 1
+    site_in = "site" in targets
+    # Batch the git push: during the loop, commit each site report but DON'T push
+    # (ARGUS_SITE_PUSH=0), then push ONCE at the end — turns N pushes into 1 on a
+    # backlog. GitHub Pages' rebuild lag dominates link-liveness either way.
+    prev_push = os.environ.get("ARGUS_SITE_PUSH")
+    if site_in and not dry:
+        os.environ["ARGUS_SITE_PUSH"] = "0"
+    try:
+        for i, d in enumerate(todo):
+            if dry:
+                results.append({"id": d["id"], "sample": d.get("sample"),
+                                "confidence": d.get("confidence"), "would_publish": True})
+                continue
+            r = publish_one(d, targets)
+            results.append(r)
+            with _lock:
+                if r["ok"]:
+                    _state["published"] += 1
+                else:
+                    _state["failed"] += 1
+                _state["recent"] = ([{"sample": r["sample"], **r["targets"]}] + _state["recent"])[:30]
+            # pace VT posts for the free rate limit — but not after the last one
+            if "vt" in targets and i < len(todo) - 1:
+                time.sleep(publish._BATCH_THROTTLE)
+    finally:
+        if site_in and not dry:
+            if prev_push is None:
+                os.environ.pop("ARGUS_SITE_PUSH", None)
             else:
-                _state["failed"] += 1
-            _state["recent"] = ([{"sample": r["sample"], **r["targets"]}] + _state["recent"])[:30]
-        # pace VT posts to respect the free rate limit
-        if "vt" in targets and not dry:
-            time.sleep(publish._BATCH_THROTTLE)
+                os.environ["ARGUS_SITE_PUSH"] = prev_push
+
+    # one push for the whole batch (idempotent: a no-op push just says up-to-date)
+    pushed = None
+    if site_in and not dry and results and site_publish._cfg()["push"]:
+        c = site_publish._cfg()
+        code, _ = site_publish._git(c["dir"], "push",
+                                    *(["origin", c["branch"]] if c["branch"] else []), timeout=180)
+        pushed = code == 0
+
     with _lock:
         _state["last_scan"] = R_now()
         _state["skipped"] += max(0, len(drafts) - len(todo))
     return {"eligible": len(todo), "published_now": sum(1 for r in results if r.get("ok")),
-            "dry_run": dry, "results": results}
+            "pushed": pushed, "dry_run": dry, "results": results}
 
 
 def R_now() -> str:
