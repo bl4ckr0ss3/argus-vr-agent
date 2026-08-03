@@ -91,19 +91,37 @@ while ($true) {
     if (Test-Path $BatchDir) { Remove-Item "$BatchDir\*" -Force -Recurse -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Force $BatchDir | Out-Null
 
-    Write-Host "  fetching up to $BatchSize '$tag' samples..."
-    $env:ARGUS_INTAKE = $BatchDir
-    & python (Join-Path $repoRoot "run.py") fetch --tag $tag --limit $BatchSize 2>&1 | Write-Host
+    # Accumulate samples from multiple families in one batch for faster VM cycles
+    Write-Host "  accumulating $BatchSize samples across multiple families..."
+    $accumulated = 0
+    $accumulatedTags = @()
+    while ($accumulated -lt $BatchSize) {
+        $tag = $Tags | Get-Random
+        $remaining = $BatchSize - $accumulated
+        $batchLimit = [Math]::Min($remaining, 5)  # 5 per family per round
+
+        $env:ARGUS_INTAKE = $BatchDir
+        Write-Host "    fetching $batchLimit '$tag' samples..."
+        & python (Join-Path $repoRoot "run.py") fetch --tag $tag --limit $batchLimit --parallel --workers 5 2>&1 | Write-Host
+
+        $newCount = @(Get-ChildItem -Path $BatchDir -Filter *.zip -File -ErrorAction SilentlyContinue).Count - $accumulated
+        $accumulated += $newCount
+        if ($newCount -gt 0) { $accumulatedTags += $tag }
+        Write-Host "    accumulated $accumulated / $BatchSize (families: $($accumulatedTags -join ', '))"
+
+        if ($accumulated -ge $BatchSize) { break }
+        Start-Sleep -Seconds 5  # brief pause between family fetches
+    }
 
     $zips = @(Get-ChildItem -Path $BatchDir -Filter *.zip -File -ErrorAction SilentlyContinue)
     if ($zips.Count -eq 0) {
-        Write-Host "  no samples this round (family embargoed/empty) - next family" -ForegroundColor DarkYellow
+        Write-Host "  no samples this round (families embargoed/empty) - next round" -ForegroundColor DarkYellow
     } else {
-        Write-Host "  detonating $($zips.Count) sample(s) through the VM..." -ForegroundColor Yellow
+        Write-Host "  detonating $($zips.Count) sample(s) through the VM in one batch..." -ForegroundColor Yellow
         & $huntLoop -Vmx $Vmx -Snapshot $Snapshot -SampleDir $BatchDir `
             -GuestUser $GuestUser -GuestPassword $GuestPassword -VmPassword $VmPassword `
             -HostRunsDir $HostRunsDir
-        Write-Host "  round $round done - Autopilot will publish the strong findings" -ForegroundColor Green
+        Write-Host "  round $round done - $($zips.Count) samples processed, Autopilot will publish strong findings" -ForegroundColor Green
     }
 
     if ($MaxRounds -gt 0 -and $round -ge $MaxRounds) {

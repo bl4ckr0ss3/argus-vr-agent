@@ -209,6 +209,62 @@ def _draft_writeup(struct: dict) -> Path:
 # ---------------------------------------------------------------------------
 # the loop
 # ---------------------------------------------------------------------------
+
+def _quick_classify(sample: Path) -> dict:
+    """Pre-detonation static check. Returns {'action': 'detonate'|'skip', 'reason': str}.
+
+    Skips only if: low entropy, no packer, no suspicious APIs, AND sample is old
+    (>30d on VT with 0/70). Always detonates fresh, packed, or suspicious samples.
+    """
+    try:
+        from .tools.malware import analyze_file
+        static = analyze_file(sample)
+        entropy = static.get("entropy", 0) or 0
+        pe = static.get("pe") or {}
+        apis = static.get("apis") or []
+        has_packer = any(s.get("entropy", 0) >= 7.2 for s in pe.get("sections", []))
+
+        # Always detonate: high entropy, suspicious APIs, or packer indicators
+        if entropy >= 7.0 or has_packer:
+            return {"action": "detonate", "reason": f"high entropy ({entropy}) or packer"}
+        if len(apis) >= 3:
+            return {"action": "detonate", "reason": f"{len(apis)} suspicious APIs"}
+
+        # Check VT age if available
+        try:
+            from .intel import virustotal
+            if virustotal.available():
+                import hashlib as _hl
+                sha = _hl.sha256(sample.read_bytes()).hexdigest()
+                vt = virustotal.lookup(sha)
+                if vt.get("found") and vt.get("total", 0) >= 20:
+                    total = vt.get("total", 0)
+                    malicious = vt.get("malicious", 0)
+                    first_seen = vt.get("first_seen") or ""
+                    age_days = 999
+                    if first_seen:
+                        try:
+                            from datetime import datetime
+                            age_days = (datetime.now() - datetime.fromisoformat(first_seen)).days
+                        except Exception:
+                            pass
+                    # Fresh sample with 0/70 — always detonate (undetected malware)
+                    if age_days < 30 and malicious == 0:
+                        return {"action": "detonate", "reason": f"fresh sample ({age_days}d), 0/{total} on VT"}
+                    # Old sample with 0/70 and no suspicious signals — skip
+                    if age_days > 30 and malicious == 0:
+                        return {"action": "skip", "reason": f"old ({age_days}d), 0/{total} on VT, low static signals"}
+                    # Known malicious — always detonate
+                    if malicious >= 3:
+                        return {"action": "detonate", "reason": f"{malicious}/{total} detections on VT"}
+        except Exception:
+            pass
+
+        return {"action": "detonate", "reason": "default — proceed"}
+    except Exception as e:
+        return {"action": "detonate", "reason": f"classify error ({e}) — proceeding"}
+
+
 def process_sample(sample: Path, timeout: int, on_event=None) -> dict:
     """Detonate one sample, analyze, record, and draft if suspicious."""
     def ev(kind, **kw):
@@ -218,7 +274,13 @@ def process_sample(sample: Path, timeout: int, on_event=None) -> dict:
             except Exception:
                 pass
 
-    ev("start")
+    # Quick-classify gate — skip old, low-signal samples
+    cls = _quick_classify(sample)
+    if cls["action"] == "skip":
+        ev("skip", reason=cls["reason"])
+        return {"status": "skipped", "verdict": "skipped", "skip_reason": cls["reason"]}
+
+    ev("start", classify=cls["reason"])
     res: dict = {}
     run_detonation(str(sample), timeout, on_progress=None, result=res)
 

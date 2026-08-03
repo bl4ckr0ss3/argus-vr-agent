@@ -123,9 +123,23 @@ def cmd_autopublish(args) -> None:
 def cmd_fetch(args) -> None:
     _try_dotenv()
     from argus.intel import malwarebazaar
-    print(f"Fetching up to {args.limit} sample(s) from MalwareBazaar into {config.INTAKE_DIR} …")
     print("!!! This downloads LIVE malware — you should be inside an isolated VM. !!!")
-    written = malwarebazaar.fetch_to_intake(limit=args.limit, tag=args.tag)
+
+    if args.watch:
+        print(f"Watching for '{args.tag or 'all'}' samples every {args.watch_interval}s ...")
+        malwarebazaar.fetch_watch(
+            tag=args.tag, interval=args.watch_interval,
+            limit_per_round=args.limit, workers=args.workers,
+            once=args.once,
+        )
+        return
+
+    if args.parallel or args.workers > 1:
+        print(f"Fetching up to {args.limit} sample(s) in parallel ({args.workers} workers) …")
+        written = malwarebazaar.fetch_parallel(limit=args.limit, tag=args.tag, workers=args.workers)
+    else:
+        print(f"Fetching up to {args.limit} sample(s) from MalwareBazaar into {config.INTAKE_DIR} …")
+        written = malwarebazaar.fetch_to_intake(limit=args.limit, tag=args.tag)
     print(f"{len(written)} new sample(s) written. Run `python run.py watch --once` to triage them.")
 
 
@@ -780,6 +794,11 @@ def main() -> None:
     pf = sub.add_parser("fetch", help="pull samples from MalwareBazaar into intake/ (VM only!)")
     pf.add_argument("--limit", type=int, default=25)
     pf.add_argument("--tag", default=None, help="filter by family/tag, e.g. AgentTesla")
+    pf.add_argument("--workers", type=int, default=5, help="parallel download workers (default 5)")
+    pf.add_argument("--parallel", action="store_true", help="use parallel fetch (default when workers > 1)")
+    pf.add_argument("--watch", action="store_true", help="watch mode: continuously fetch new samples")
+    pf.add_argument("--watch-interval", type=int, default=300, help="seconds between watch rounds (default 300)")
+    pf.add_argument("--once", action="store_true", help="in watch mode: one round then exit")
     pf.set_defaults(func=cmd_fetch)
 
     pwt = sub.add_parser("watch", help="autonomously triage new files in intake/ (static)")

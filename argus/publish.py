@@ -133,14 +133,39 @@ def approve(draft: str) -> dict:
     return {"ok": True, "dir": str(d), "status": "approved"}
 
 
+def _days_since(iso_date: str) -> int:
+    """Days since an ISO date string. Returns 999 on parse failure."""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(iso_date)
+        return (datetime.now() - dt).days
+    except Exception:
+        return 999
+
+
 def safety_reason(struct: dict) -> str | None:
-    """Why this finding must NOT be auto-published (None = clear to publish)."""
+    """Why this finding must NOT be auto-published (None = clear to publish).
+
+    Freshness-aware: a 0/70 VT result on a young sample is NOT a safety block —
+    it's likely undetected malware. Only stale 0/70 samples are blocked.
+    """
     vt = struct.get("vt") or {}
     conflict = (struct.get("vt_conflict") or "").lower()
     if "false positive" in conflict:
         return "VirusTotal contradicts the heuristic (likely false positive)"
+
     if vt.get("found") and vt.get("total", 0) >= 20 and vt.get("malicious", 0) == 0:
-        return f"VirusTotal shows 0/{vt['total']} detections"
+        first_seen = vt.get("first_seen") or ""
+        age_days = _days_since(first_seen) if first_seen else 999
+        if age_days < 7:
+            struct["vt_note"] = f"undetected (0/{vt['total']}) — fresh sample ({age_days}d old)"
+            return None  # fresh malware, AV hasn't caught up yet
+        elif age_days < 30:
+            struct["vt_note"] = f"undetected (0/{vt['total']}) — moderate age ({age_days}d)"
+            return None  # allow with caution flag
+        else:
+            return f"VirusTotal shows 0/{vt['total']} detections (sample is {age_days}d old)"
+
     if struct.get("verdict") != "suspicious":
         return f"verdict is '{struct.get('verdict')}', not a malware finding"
     if struct.get("confidence", 0) < 55:
