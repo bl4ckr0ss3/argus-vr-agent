@@ -70,6 +70,22 @@ function VM([string[]]$vmArgs) {
 }
 function VMquiet([string[]]$vmArgs) { & $VMRUN @vmArgs 2>&1 | Out-Null }
 
+# Boot the guest and wait for an interactive desktop (explorer.exe). runProgram
+# InGuest returns a generic 'exit 1' for every program until a user is logged in,
+# so the baseline MUST auto-login; we poll rather than fixed-sleep so a fast boot
+# proceeds immediately and only a genuine failure burns the full timeout.
+function Wait-Desktop {
+    $running = ((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx)
+    if (-not $running) { VMquiet ($base + @("start",$Vmx,"nogui")) }
+    $deadline = (Get-Date).AddSeconds([Math]::Max($BootWaitSec, 240))
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 6
+        $procs = (& $VMRUN @($auth + @("listProcessesInGuest",$Vmx)) 2>&1) -join "`n"
+        if ($procs -match "explorer\.exe") { return $true }
+    }
+    return $false
+}
+
 $samples = Get-ChildItem -Path $SampleDir -Filter *.zip -File
 if (-not $samples) { Write-Host "No .zip samples in $SampleDir"; exit 1 }
 Write-Host "== ARGUS hunt-loop: $($samples.Count) sample(s) ==" -ForegroundColor Cyan
@@ -80,24 +96,17 @@ foreach ($s in $samples) {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
         Write-Host "  start (headless)"
-        # A RUNNING-state snapshot leaves the VM already powered on after revert,
-        # so only start it if it isn't already running (a bare start would throw
-        # 'already running' and abort the sample).
-        $running = ((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx)
-        if (-not $running) { VMquiet ($base + @("start",$Vmx,"nogui")) }
-        # Wait for an interactive DESKTOP session (explorer.exe). runProgramInGuest
-        # returns a generic 'exit code 1' for every program until a user is logged
-        # in, so the baseline MUST auto-login. Poll instead of a fixed sleep.
+        # A RUNNING-state snapshot leaves the VM already powered on after revert.
+        # Wait for the desktop; a slow/failed auto-login is usually transient, so
+        # revert+reboot and try ONCE more before writing the sample off (that lost
+        # ~1 sample in 4 to a single unlucky boot).
         Write-Host "  waiting for desktop session (auto-login)..."
-        $sessionUp = $false
-        $deadline = (Get-Date).AddSeconds([Math]::Max($BootWaitSec, 240))
-        while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 6
-            $procs = (& $VMRUN @($auth + @("listProcessesInGuest",$Vmx)) 2>&1) -join "`n"
-            if ($procs -match "explorer\.exe") { $sessionUp = $true; break }
-        }
-        if (-not $sessionUp) {
-            throw "no desktop session (explorer.exe) after boot - enable AUTO-LOGIN in the CLEANBASELINE (netplwiz), then re-snapshot"
+        if (-not (Wait-Desktop)) {
+            Write-Host "  desktop not up - reverting + retrying once" -ForegroundColor DarkYellow
+            VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+            if (-not (Wait-Desktop)) {
+                throw "no desktop session (explorer.exe) after 2 boots - if this is EVERY sample, enable AUTO-LOGIN in CLEANBASELINE (netplwiz) + re-snapshot"
+            }
         }
         Write-Host "  desktop ready"
 
