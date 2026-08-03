@@ -154,6 +154,14 @@ def cmd_detonate(args) -> None:
                    on_progress=lambda line: print(line, flush=True))
 
 
+def cmd_cleanup(args) -> None:
+    from argus.cleanup import clean
+    dry = not args.apply
+    result = clean(days=args.days, dry=dry)
+    verb = "DRY-RUN" if dry else "CLEANED"
+    print(f"\n{verb}: {result['deleted']} items, {result['freed_bytes'] // 1024}KB freed")
+
+
 def cmd_reanalyze(args) -> None:
     """Re-run auto-analysis on an existing detonation folder (no re-detonation)."""
     _try_dotenv()
@@ -763,6 +771,11 @@ def main() -> None:
     pdyn.add_argument("sample")
     pdyn.add_argument("--timeout", type=int, default=120, help="max execution seconds")
     pdyn.set_defaults(func=cmd_detonate)
+
+    pclean = sub.add_parser("cleanup", help="purge old run artifacts to save disk")
+    pclean.add_argument("--days", type=int, default=config.RUNTIME_RETENTION_DAYS)
+    pclean.add_argument("--apply", action="store_true", help="actually delete (default dry-run)")
+    pclean.set_defaults(func=cmd_cleanup)
 
     pf = sub.add_parser("fetch", help="pull samples from MalwareBazaar into intake/ (VM only!)")
     pf.add_argument("--limit", type=int, default=25)

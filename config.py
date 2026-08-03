@@ -268,3 +268,31 @@ VT_API = os.environ.get("VT_API", "https://www.virustotal.com/api/v3")
 # detonate samples, so an unauthenticated network endpoint is effectively a
 # remote-code-execution service. Localhost with no token = single-user dev mode.
 WEB_TOKEN = os.environ.get("ARGUS_WEB_TOKEN", "").strip()
+
+# --- Production mode / optimization -----------------------------------------
+# Set ARGUS_PROFILE=production for faster, leaner pipeline (shorter timeouts,
+# smaller captures, parallel processing, auto-cleanup). Default (development)
+# runs full-depth analysis with maximum detail.
+ARGUS_PROFILE = os.environ.get("ARGUS_PROFILE", "development").strip().lower()
+IS_PRODUCTION = ARGUS_PROFILE == "production"
+
+# Detonation speed (seconds). Production = 30s (catches most droppers).
+# Development = 600s (catches gated/beaconing samples).
+DETONATE_TIMEOUT = int(os.environ.get("ARGUS_DETONATE_TIMEOUT", "30" if IS_PRODUCTION else "600"))
+
+# Parallel samples per detonation batch. Production = 3 concurrent.
+# Development = 1 (sequential, full detail).
+PARALLEL_DETONATIONS = int(os.environ.get("ARGUS_PARALLEL", "3" if IS_PRODUCTION else "1"))
+
+# Disk retention (days). Production = auto-clean runs older than 7 days.
+# Development = keep everything.
+RUNTIME_RETENTION_DAYS = int(os.environ.get("ARGUS_RETENTION_DAYS", "7" if IS_PRODUCTION else "0"))
+
+# Model tiering — which model for which task type.
+# Production: use cheap model for triage, main model for hunting.
+# Development: use main model for everything.
+MODEL_TIER = {
+    "triage": os.environ.get("ARGUS_MODEL_TRIAGE", "deepseek/deepseek-chat" if IS_PRODUCTION else ""),
+    "classify": os.environ.get("ARGUS_MODEL_CLASSIFY", "deepseek/deepseek-chat" if IS_PRODUCTION else ""),
+    "hunt": os.environ.get("ARGUS_MODEL_HUNT", ""),
+}

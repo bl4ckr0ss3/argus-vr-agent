@@ -273,7 +273,11 @@ def process_sample(sample: Path, timeout: int, on_event=None) -> dict:
 
 def loop(queue_dir: Path | None = None, timeout: int = 120,
          once: bool = False, interval: int = 30, on_event=None) -> None:
-    """Continuously drain the sample queue. Idempotent by SHA-256."""
+    """Continuously drain the sample queue. Idempotent by SHA-256.
+
+    Parallel processing: when config.PARALLEL_DETONATIONS > 1, multiple samples
+    are processed concurrently in a thread pool. Set via ARGUS_PARALLEL env var.
+    """
     queue_dir = Path(queue_dir) if queue_dir else config.INTAKE_DIR
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -285,35 +289,64 @@ def loop(queue_dir: Path | None = None, timeout: int = 120,
                 pass
 
     ev("loop_start", queue=str(queue_dir), once=once)
+    parallel = max(1, config.PARALLEL_DETONATIONS)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     while True:
         seen = _load_seen()
-        processed_any = False
-        for sample in _iter_queue(queue_dir):
-            try:
-                sha = _sha256(sample)
-            except OSError:
-                continue
-            if sha in seen:
-                continue
-            processed_any = True
-            outcome = process_sample(sample, timeout, on_event=on_event)
-
-            if outcome.get("status") == "blocked":
-                # keys present -> the whole VM is unsafe; stop rather than spin.
-                ev("halt", reason="credentials present — remove keys from this VM")
+        samples = [s for s in _iter_queue(queue_dir)
+                   if not (s in seen or _sha256(s) in seen)]
+        if not samples:
+            if once:
+                ev("loop_end", processed=0)
                 return
-            seen[sha] = {
-                "sample": sample.name, "verdict": outcome.get("verdict"),
-                "status": outcome.get("status"), "draft": outcome.get("draft"),
-                "ts": _now(),
-            }
-            _save_seen(seen)
+            ev("idle", waiting=interval)
+            time.sleep(max(5, interval))
+            continue
+
+        processed_any = False
+        if parallel > 1 and len(samples) > 1:
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(process_sample, s, timeout, on_event=on_event): s
+                           for s in samples[:parallel * 3]}
+                for fut in as_completed(futures):
+                    sample = futures[fut]
+                    try:
+                        outcome = fut.result(timeout=timeout + 120)
+                        if outcome.get("status") == "blocked":
+                            ev("halt", reason="credentials present")
+                            return
+                        processed_any = True
+                        sha = _sha256(sample)
+                        seen[sha] = {
+                            "sample": sample.name, "verdict": outcome.get("verdict"),
+                            "status": outcome.get("status"), "draft": outcome.get("draft"),
+                            "ts": _now(),
+                        }
+                    except Exception as e:
+                        ev("error", sample=sample.name, error=str(e))
+        else:
+            for sample in samples:
+                try:
+                    outcome = process_sample(sample, timeout, on_event=on_event)
+                    if outcome.get("status") == "blocked":
+                        ev("halt", reason="credentials present")
+                        return
+                    processed_any = True
+                    sha = _sha256(sample)
+                    seen[sha] = {
+                        "sample": sample.name, "verdict": outcome.get("verdict"),
+                        "status": outcome.get("status"), "draft": outcome.get("draft"),
+                        "ts": _now(),
+                    }
+                except Exception as e:
+                    ev("error", sample=sample.name, error=str(e))
+
+        _save_seen(seen)
 
         if once:
-            ev("loop_end", processed=processed_any)
+            ev("loop_end", processed=len(samples))
             return
-        if not processed_any:
-            ev("idle", waiting=interval)
         time.sleep(max(5, interval))
 
 
