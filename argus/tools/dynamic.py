@@ -130,7 +130,9 @@ def _filesystem_snapshot(label: str, out_dir: Path, target_dirs: list[str]) -> P
     path = out_dir / f"files_{label}.txt"
     lines = [f"=== Filesystem snapshot: {label} ==="]
     for d in target_dirs:
-        out = _safe_exec(f'dir /s /b "{d}" 2>&1', timeout=60)
+        # 15s cap: the scoped dirs list in well under this; the cap just guarantees
+        # one unexpectedly-large dir can never stall detonation the way ProgramData did.
+        out = _safe_exec(f'dir /s /b "{d}" 2>&1', timeout=15)
         lines.append(f"\n--- {d} ---\n{out}")
     path.write_text("\n".join(lines), encoding="utf-8", errors="ignore")
     return path
@@ -784,11 +786,21 @@ def _generate_behavioral_report(sample_hash: str, out_dir: Path,
 # detonation core (streams stage progress via on_progress)
 # ---------------------------------------------------------------------------
 def _snapshot_dirs() -> list[str]:
+    """Directories diffed before/after detonation for dropped-file + Startup-
+    persistence signals. Deliberately NOT a full `C:\\ProgramData` recursion: that
+    tree is enormous and `dir /s /b` over it hit the 60s timeout twice per sample
+    (~120s of pure overhead). These are where commodity RATs/stealers actually
+    stage + persist; anything else is still captured by procmon during execution."""
+    appdata = os.environ.get("APPDATA", r"C:\Users\Public\AppData\Roaming")
+    programdata = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    startup = r"Microsoft\Windows\Start Menu\Programs\Startup"
     return [
         os.environ.get("TEMP", r"C:\Windows\Temp"),
-        os.environ.get("APPDATA", r"C:\Users\Public\AppData\Roaming"),
-        r"C:\ProgramData",
+        appdata,                                          # RAT/stealer install dir (Remcos, AgentTesla)
+        os.path.join(appdata, startup),                  # per-user autostart
+        os.path.join(programdata, startup),              # all-users autostart
         r"C:\Windows\Tasks",
+        r"C:\Windows\System32\Tasks",                    # scheduled-task persistence
     ]
 
 
