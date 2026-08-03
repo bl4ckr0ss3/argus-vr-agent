@@ -105,7 +105,7 @@ def resolve_llm() -> dict:
         "moonshot":   {"kind": "openai", "base_url": "https://api.moonshot.ai/v1", "api_key": mk or gen_key, "model": "kimi-k2-0711-preview"},
         "openai":     {"kind": "openai", "base_url": "https://api.openai.com/v1", "api_key": oa or gen_key, "model": "gpt-4o"},
         "anthropic":  {"kind": "anthropic", "base_url": "", "api_key": an or gen_key, "model": "claude-sonnet-5"},
-        "openrouter": {"kind": "openai", "base_url": "https://openrouter.ai/api/v1", "api_key": or_key or gen_key, "model": "deepseek/deepseek-v4-pro"},
+        "openrouter": {"kind": "openai", "base_url": "https://openrouter.ai/api/v1", "api_key": or_key or gen_key, "model": "deepseek/deepseek-v4-flash-0731"},
         # AgentRouter (agentrouter.org) — OpenAI-compatible gateway with a
         # single API key for multiple providers. Base URL docs say /v1
         # for OpenAI-compatible usage. Models are provider-native strings.
