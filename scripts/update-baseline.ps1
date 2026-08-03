@@ -87,11 +87,14 @@ Write-Host "  copying code into guest + extracting"
 VM ($auth + @("copyFileFromHostToGuest",$Vmx,$stage,$guestZip)) | Out-Null
 $gps = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 $log = "C:\Users\Public\argus-update.log"
+# Verify by grepping the EXTRACTED files for the new code markers (Select-String,
+# not `python -c`): no dependency on python/imports in the guest, and — critically —
+# no nested double-quotes, which don't survive vmrun's argument passing.
 $ps  = "Expand-Archive -Path '$guestZip' -DestinationPath '$GuestRepo' -Force; " +
-       "Set-Location '$GuestRepo'; " +
-       "python -c `"import argus.autohunt as a, argus.tools.dynamic as d; " +
-       "print('recursive-unpack:', hasattr(a,'_extract_with_7z')); " +
-       "print('settle-window:', hasattr(d,'_SETTLE_SECONDS'))`" *> '$log'; exit 0"
+       "`$a = Select-String -Path '$GuestRepo\argus\autohunt.py' -Pattern '_extract_with_7z' -Quiet -EA SilentlyContinue; " +
+       "`$b = Select-String -Path '$GuestRepo\argus\tools\dynamic.py' -Pattern '_SETTLE_SECONDS' -Quiet -EA SilentlyContinue; " +
+       "('recursive-unpack: ' + `$a) | Out-File -FilePath '$log' -Encoding ascii; " +
+       "('settle-window: '   + `$b) | Out-File -FilePath '$log' -Append -Encoding ascii; exit 0"
 & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$ps)) 2>&1 | Out-Null
 
 # bring the verification log back to the host and show it
@@ -104,6 +107,8 @@ if (Test-Path $hostLog) {
     Write-Host "  guest verification:" -ForegroundColor DarkGray
     $txt -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     if ($txt -match "recursive-unpack:\s*True" -and $txt -match "settle-window:\s*True") { $verified = $true }
+} else {
+    Write-Host "  (no verification log came back from the guest — extract or copy-out failed)" -ForegroundColor DarkYellow
 }
 if (-not $verified) {
     throw "guest did not verify the new code (import check failed). NOT re-snapshotting - your existing CLEANBASELINE is untouched."
