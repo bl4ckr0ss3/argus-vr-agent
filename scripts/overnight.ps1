@@ -43,7 +43,24 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 New-Item -ItemType Directory -Force $LogDir | Out-Null
 New-Item -ItemType Directory -Force $HostRunsDir | Out-Null
 
-# ---- load .env secrets into the environment (reuse ARGUS's own loader) ----
+# ---- load .env secrets into the environment --------------------------------
+# .env is a KEY=VALUE file (with # comments). run.py auto-loads it for its OWN
+# process, but the PowerShell subprocesses we spawn (autonomous.ps1 → fetch,
+# publish) check $env:MALWAREBAZAAR_API_KEY etc. directly — so surface .env into
+# this shell so children inherit it. Never echo the values.
+$envFile = Join-Path $repoRoot ".env"
+if (Test-Path $envFile) {
+    foreach ($line in Get-Content $envFile) {
+        $line = $line.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line.Contains("=")) {
+            $idx = $line.IndexOf("=")
+            $k = $line.Substring(0, $idx).Trim()
+            $v = $line.Substring($idx + 1).Trim().Trim('"')
+            if ($k -and -not [Environment]::GetEnvironmentVariable($k)) { Set-Item -Path "Env:$k" -Value $v }
+        }
+    }
+}
+
 Write-Host "== ARGUS overnight loop ==" -ForegroundColor Cyan
 
 # ---- preflight: required keys ----
@@ -73,16 +90,20 @@ Write-Host "    PID $($publisher.Id)  (log: $pubLog)" -ForegroundColor DarkGray
 # ---- start HUNTER (fetch + VM detonation) in background ----
 $hunLog  = Join-Path $LogDir "hunter.log"
 $hunErr  = Join-Path $LogDir "hunter.err.log"
-$hArgs   = @("-Vmx","`"$Vmx`"","-GuestUser",$GuestUser,"-GuestPassword",$GuestPassword,
-             "-Snapshot",$Snapshot,"-BatchSize",$BatchSize,"-RoundDelaySec",$RoundDelaySec,
-             "-HostRunsDir",$HostRunsDir)
-if ($VmPassword) { $hArgs += @("-VmPassword",$VmPassword) }
-if ($Fast)       { $hArgs += "-Fast" }
-if ($Parallel -gt 1) { $hArgs += @("-Parallel",$Parallel) }
+# Build a single command string so paths with spaces serialize correctly through
+# Start-Process -ArgumentList.
+$bp = @(
+    "& '{0}' -Vmx '{1}' -GuestUser '{2}' -GuestPassword '{3}'" -f `
+        (Join-Path $PSScriptRoot "autonomous.ps1"), $Vmx, $GuestUser, $GuestPassword
+)
+$bp += "-Snapshot '{0}' -BatchSize {1} -RoundDelaySec {2} -HostRunsDir '{3}'" -f $Snapshot, $BatchSize, $RoundDelaySec, $HostRunsDir
+if ($VmPassword) { $bp += "-VmPassword '{0}'" -f $VmPassword }
+if ($Fast)       { $bp += "-Fast" }
+if ($Parallel -gt 1) { $bp += "-Parallel $Parallel" }
+$hunterCmd = $bp -join " "
 Write-Host "  launching HUNTER (MalwareBazaar fetch + VM detonation) -> $hunLog" -ForegroundColor Green
-# Use an interactive script (Start-Process) so it keeps running independent of this shell
 $hunter = Start-Process -FilePath "powershell" -ArgumentList @(
-    "-NoProfile","-ExecutionPolicy","Bypass","-File",(Join-Path $PSScriptRoot "autonomous.ps1"), $hArgs
+    "-NoProfile","-ExecutionPolicy","Bypass","-Command",$hunterCmd
 ) -WorkingDirectory $repoRoot -RedirectStandardOutput $hunLog -RedirectStandardError $hunErr -WindowStyle Minimized -PassThru
 Write-Host "    PID $($hunter.Id)  (log: $hunLog)" -ForegroundColor DarkGray
 
