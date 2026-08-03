@@ -35,7 +35,10 @@ param(
     [switch]$Fast,
     [string]$HostRunsDir   = "C:\argus-results\runs",
     [string]$LogDir        = "C:\argus-results\logs",
-    [int]$Port             = 8765
+    [int]$Port             = 8765,
+    [int]$Hours            = 8,                    # 0 = run forever
+    [int]$MaxRestarts      = 3,                    # restart crashed worker this many times
+    [switch]$PreflightOnly                         # validate config then exit; no VM/sample execution
 )
 $ErrorActionPreference = "Stop"
 
@@ -69,27 +72,32 @@ if (-not $env:MALWAREBAZAAR_API_KEY) { $missing += "MALWAREBAZAAR_API_KEY" }
 if (-not $env:VT_API_KEY)            { $missing += "VT_API_KEY" }
 if (-not $env:ARGUS_SITE_DIR)        { $missing += "ARGUS_SITE_DIR" }
 if ($missing.Count) {
-    Write-Host "  ! missing from env (your .env may not be exported to this shell):" -ForegroundColor Yellow
-    foreach ($m in $missing) { Write-Host "      $m" -ForegroundColor Yellow }
-    Write-Host "  Either export them, or set them in .env AND remove the guard in run.py loading." -ForegroundColor Yellow
-    # .env is auto-loaded by run.py subprocesses, so only the preflight vars matter here.
+    throw "Missing required setting(s): $($missing -join ', '). Add them to .env before overnight mode."
 }
+if (-not (Test-Path -LiteralPath $Vmx)) { throw "VMX not found: $Vmx" }
+if (-not (Test-Path -LiteralPath $env:ARGUS_SITE_DIR)) { throw "ARGUS_SITE_DIR not found: $env:ARGUS_SITE_DIR" }
 if (-not $env:ARGUS_RUNS) { $env:ARGUS_RUNS = $HostRunsDir }
 $env:ARGUS_AUTOPUBLISH = "1"
+$deadline = if ($Hours -gt 0) { (Get-Date).AddHours($Hours) } else { $null }
 
-# ---- start PUBLISHER (web console + autopilot) in background ----
-$pubLog  = Join-Path $LogDir "publisher.log"
-$pubErr  = Join-Path $LogDir "publisher.err.log"
+if ($PreflightOnly) {
+    $pythonCheck = (Get-Command python -ErrorAction Stop).Source
+    Write-Host "  PRECHECK OK" -ForegroundColor Green
+    Write-Host "    VMX        : $Vmx"
+    Write-Host "    Python     : $pythonCheck"
+    Write-Host "    Runs       : $HostRunsDir"
+    Write-Host "    Site       : $env:ARGUS_SITE_DIR"
+    Write-Host "    MB key     : SET"
+    Write-Host "    VT key     : SET"
+    Write-Host "    Autopublish: ON"
+    Write-Host "    Duration   : $(if($Hours -gt 0){"$Hours hour(s)"}else{'forever'})"
+    return
+}
+
+# ---- process launch helpers -------------------------------------------------
+$python = (Get-Command python -ErrorAction Stop).Source
 $env:ARGUS_RUNS = $HostRunsDir
-Write-Host "  launching PUBLISHER (web :$Port / panel / pipeline, Autopilot ON) -> $pubLog" -ForegroundColor Green
-$publisher = Start-Process -FilePath "pythonw" -ArgumentList @(
-    (Join-Path $repoRoot "run.py"), "web", "--port", "$Port"
-) -WorkingDirectory $repoRoot -RedirectStandardOutput $pubLog -RedirectStandardError $pubErr -WindowStyle Minimized -PassThru
-Write-Host "    PID $($publisher.Id)  (log: $pubLog)" -ForegroundColor DarkGray
 
-# ---- start HUNTER (fetch + VM detonation) in background ----
-$hunLog  = Join-Path $LogDir "hunter.log"
-$hunErr  = Join-Path $LogDir "hunter.err.log"
 # Build a single command string so paths with spaces serialize correctly through
 # Start-Process -ArgumentList.
 $bp = @(
@@ -101,32 +109,73 @@ if ($VmPassword) { $bp += "-VmPassword '{0}'" -f $VmPassword }
 if ($Fast)       { $bp += "-Fast" }
 if ($Parallel -gt 1) { $bp += "-Parallel $Parallel" }
 $hunterCmd = $bp -join " "
-Write-Host "  launching HUNTER (MalwareBazaar fetch + VM detonation) -> $hunLog" -ForegroundColor Green
-$hunter = Start-Process -FilePath "powershell" -ArgumentList @(
-    "-NoProfile","-ExecutionPolicy","Bypass","-Command",$hunterCmd
-) -WorkingDirectory $repoRoot -RedirectStandardOutput $hunLog -RedirectStandardError $hunErr -WindowStyle Minimized -PassThru
-Write-Host "    PID $($hunter.Id)  (log: $hunLog)" -ForegroundColor DarkGray
+
+$pubRestart = 0
+$hunRestart = 0
+
+function Start-Publisher([int]$attempt) {
+    $out = Join-Path $LogDir ("publisher.{0}.log" -f $attempt)
+    $err = Join-Path $LogDir ("publisher.{0}.err.log" -f $attempt)
+    Write-Host "  launching PUBLISHER (attempt $attempt, web :$Port, Autopilot ON) -> $out" -ForegroundColor Green
+    $p = Start-Process -FilePath $python -ArgumentList @(
+        (Join-Path $repoRoot "run.py"), "web", "--port", "$Port"
+    ) -WorkingDirectory $repoRoot -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Minimized -PassThru
+    return @{ process=$p; out=$out; err=$err }
+}
+
+function Start-Hunter([int]$attempt) {
+    $out = Join-Path $LogDir ("hunter.{0}.log" -f $attempt)
+    $err = Join-Path $LogDir ("hunter.{0}.err.log" -f $attempt)
+    Write-Host "  launching HUNTER (attempt $attempt, MalwareBazaar + VM) -> $out" -ForegroundColor Green
+    $p = Start-Process -FilePath "powershell" -ArgumentList @(
+        "-NoProfile","-ExecutionPolicy","Bypass","-Command",$hunterCmd
+    ) -WorkingDirectory $repoRoot -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Minimized -PassThru
+    return @{ process=$p; out=$out; err=$err }
+}
+
+$pubState = Start-Publisher $pubRestart
+$hunState = Start-Hunter $hunRestart
+$publisher = $pubState.process
+$hunter = $hunState.process
+Write-Host "    publisher PID $($publisher.Id); hunter PID $($hunter.Id)" -ForegroundColor DarkGray
 
 # ---- tailing / monitoring loop ----
 Write-Host ""
 Write-Host "Both loops running. Ctrl+C to stop."
 Write-Host "  panel    : http://127.0.0.1:$Port/panel"
 Write-Host "  pipeline : http://127.0.0.1:$Port/pipeline"
+Write-Host "  duration : $(if($Hours -gt 0){"$Hours hour(s)"}else{'until stopped'})"
 Write-Host ""
 try {
     while ($true) {
         Start-Sleep -Seconds 15
+        if ($deadline -and (Get-Date) -ge $deadline) {
+            Write-Host "Reached overnight duration ($Hours hour(s))." -ForegroundColor Cyan
+            break
+        }
         $pubAlive = -not $publisher.HasExited
         $hunAlive = -not $hunter.HasExited
         Write-Host ("[{0:HH:mm:ss}] publisher={1} hunter={2}" -f (Get-Date),
                     $(if($pubAlive){'UP'}else{'DOWN'}), $(if($hunAlive){'UP'}else{'DOWN'})) -ForegroundColor DarkCyan
         if (-not $pubAlive) {
             Write-Host "  ! publisher exited; tail:" -ForegroundColor Yellow
-            if (Test-Path $pubErr) { Get-Content $pubErr -Tail 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            if (Test-Path $pubState.err) { Get-Content $pubState.err -Tail 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            if ($pubRestart -lt $MaxRestarts) {
+                $pubRestart++
+                Start-Sleep -Seconds 5
+                $pubState = Start-Publisher $pubRestart
+                $publisher = $pubState.process
+            } else { throw "publisher exceeded MaxRestarts=$MaxRestarts" }
         }
         if (-not $hunAlive) {
             Write-Host "  ! hunter exited; tail:" -ForegroundColor Yellow
-            if (Test-Path $hunErr) { Get-Content $hunErr -Tail 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            if (Test-Path $hunState.err) { Get-Content $hunState.err -Tail 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            if ($hunRestart -lt $MaxRestarts) {
+                $hunRestart++
+                Start-Sleep -Seconds 10
+                $hunState = Start-Hunter $hunRestart
+                $hunter = $hunState.process
+            } else { throw "hunter exceeded MaxRestarts=$MaxRestarts" }
         }
     }
 }

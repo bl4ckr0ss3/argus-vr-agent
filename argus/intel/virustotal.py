@@ -104,6 +104,19 @@ def enrich(struct: dict) -> dict:
 
     verdict = struct.get("verdict")
     mal = vt["malicious"]
+    total = vt.get("total", 0)
+    # Freshness: how old is the first VT submission? A brand-new sample showing
+    # 0/N is EXPECTED (signatures haven't caught up) — that is undetected malware,
+    # not a false positive. Only a STALE 0/N with no other signals is a likely FP.
+    age_days = 999
+    fsd = vt.get("first_seen") or ""
+    if fsd:
+        try:
+            from datetime import datetime
+            age_days = (datetime.now() - datetime.fromisoformat(fsd)).days
+        except Exception:
+            pass
+    is_fresh = age_days < 30
     # Heuristic says clean but AV consensus says malicious -> flag loudly.
     if verdict in ("benign", "inconclusive") and mal >= 5:
         struct["vt_conflict"] = (f"heuristic '{verdict}' but VirusTotal flags "
@@ -111,13 +124,21 @@ def enrich(struct: dict) -> dict:
         struct["confidence"] = max(struct.get("confidence", 0), 70)
         struct["confidence_label"] = "high" if struct["confidence"] >= 80 else "medium"
     # Heuristic says suspicious but nobody else agrees -> likely a false positive.
-    elif verdict == "suspicious" and vt.get("total", 0) >= 20 and mal == 0:
+    # NOTE: ONLY for a STALE sample. A fresh (age<30d) 0/N is undetected malware,
+    # so we don't cripple its confidence nor set the "false positive" conflict (that
+    # would block the freshness-aware publish gate in publish.safety_reason).
+    elif verdict == "suspicious" and total >= 20 and mal == 0 and not is_fresh:
         struct["vt_conflict"] = (f"heuristic 'suspicious' but VirusTotal is clean "
-                                 f"(0/{vt['total']}) - likely false positive")
+                                 f"(0/{total}) after {age_days}d - likely false positive")
         struct["confidence"] = min(struct.get("confidence", 100), 45)
         struct["confidence_label"] = "low"
     # Agreement raises confidence.
     elif verdict == "suspicious" and mal >= 5:
         struct["confidence"] = min(98, struct.get("confidence", 0) + 10)
         struct["confidence_label"] = "high" if struct["confidence"] >= 80 else "medium"
+    # Fresh sample, suspicious verdict, 0/N: keep confidence as-is (undetected
+    # malware). Don't set vt_conflict; record a neutral freshness note instead.
+    elif verdict == "suspicious" and total >= 20 and mal == 0 and is_fresh:
+        struct["vt_note"] = (f"undetected (0/{total}) - fresh sample ({age_days}d)"
+                             if age_days != 999 else "undetected (0/N)")
     return struct

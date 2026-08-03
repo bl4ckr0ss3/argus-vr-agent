@@ -6,6 +6,7 @@ without approval, no publish of a VT-contradicted / low-confidence finding
 to 'published'. No live network here.
 """
 import json
+from datetime import datetime, timedelta
 
 import argus.publish as pub
 
@@ -20,7 +21,7 @@ def _mkdraft(tmp_path, struct, status="pending-review", tweet="tweet text"):
     return d
 
 
-def test_safety_reason():
+def test_safety_reason(monkeypatch):
     # a solid suspicious finding is clear to publish
     assert pub.safety_reason({"verdict": "suspicious", "confidence": 90, "signals": ["network"]}) is None
     # VT-flagged false positive is refused
@@ -30,9 +31,28 @@ def test_safety_reason():
     assert pub.safety_reason({"verdict": "benign", "confidence": 85})
     # low confidence is refused
     assert pub.safety_reason({"verdict": "suspicious", "confidence": 40, "signals": ["x"]})
-    # 0 VT detections is refused
+    # 0 VT detections with no freshness evidence is refused
     assert pub.safety_reason(
         {"verdict": "suspicious", "confidence": 90, "vt": {"found": True, "total": 72, "malicious": 0}})
+
+    # Fresh 0/70 is the valuable "undetected malware" case. It remains blocked
+    # by default, but the explicit overnight opt-in lets it publish.
+    fresh = {
+        "verdict": "suspicious", "confidence": 90,
+        "vt": {"found": True, "total": 72, "malicious": 0,
+               "first_seen": (datetime.now() - timedelta(days=2)).date().isoformat()},
+    }
+    monkeypatch.setenv("ARGUS_PUBLISH_UNDETECTED", "1")
+    assert pub.safety_reason(fresh) is None
+    assert "undetected" in fresh["vt_note"]
+
+    # A stale 0/70 remains blocked even with the opt-in.
+    stale = {
+        "verdict": "suspicious", "confidence": 90,
+        "vt": {"found": True, "total": 72, "malicious": 0,
+               "first_seen": (datetime.now() - timedelta(days=90)).date().isoformat()},
+    }
+    assert pub.safety_reason(stale)
 
 
 def test_refuses_unapproved(tmp_path):
