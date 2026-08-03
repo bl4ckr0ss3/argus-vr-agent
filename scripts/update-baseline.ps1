@@ -27,7 +27,8 @@ param(
     [Parameter(Mandatory)] [string]$GuestPassword,
     [string]$GuestRepo  = "C:\argus-vr-agent",
     [string]$VmPassword = "",
-    [string]$Vmrun      = ""
+    [string]$Vmrun      = "",
+    [switch]$With7z                                     # also copy host 7-Zip into guest C:\Tools (unlocks .rar samples)
 )
 
 $ErrorActionPreference = "Stop"
@@ -114,6 +115,22 @@ if (-not $verified) {
     throw "guest did not verify the new code (import check failed). NOT re-snapshotting - your existing CLEANBASELINE is untouched."
 }
 Write-Host "  new code verified in guest" -ForegroundColor Green
+
+# --- 3b. Optional: bake 7-Zip into the guest for .rar/.7z droppers --------------
+if ($With7z) {
+    Write-Host "  installing 7-Zip into guest C:\Tools (for .rar/.7z samples)"
+    $hzExe = @("C:\Program Files\7-Zip\7z.exe","C:\Program Files (x86)\7-Zip\7z.exe") |
+             Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $hzExe) { throw "-With7z: no 7z.exe on the host — install 7-Zip (https://www.7-zip.org) first" }
+    $hzDll = Join-Path (Split-Path $hzExe) "7z.dll"
+    if (-not (Test-Path $hzDll)) { throw "-With7z: 7z.dll missing next to $hzExe (needed for the codecs)" }
+    # create C:\Tools in the guest, then copy BOTH files (7z.exe can't run without 7z.dll)
+    $mk = "New-Item -ItemType Directory -Force 'C:\Tools' | Out-Null; exit 0"
+    & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$mk)) 2>&1 | Out-Null
+    VM ($auth + @("copyFileFromHostToGuest",$Vmx,$hzExe,"C:\Tools\7z.exe")) | Out-Null
+    VM ($auth + @("copyFileFromHostToGuest",$Vmx,$hzDll,"C:\Tools\7z.dll")) | Out-Null
+    Write-Host "    copied 7z.exe + 7z.dll -> C:\Tools" -ForegroundColor Green
+}
 
 # --- 4. Graceful shutdown (never hard-stop a running snapshot) ------------------
 Write-Host "  shutting the guest down cleanly..."
