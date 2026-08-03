@@ -64,6 +64,8 @@ def summarize(struct: dict) -> str | None:
             return None
         out = b.complete(_PROMPT + json.dumps(_facts(struct), separators=(",", ":")))
         out = (out or "").strip().strip('"')
+        if "only reasoning" in out.lower():   # reasoning model ran out of budget
+            return None
         # collapse whitespace/newlines to a single tidy paragraph
         out = " ".join(out.split())
         return out[:_MAX] or None

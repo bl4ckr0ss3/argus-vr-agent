@@ -162,16 +162,17 @@ class OpenAICompatBackend:
             tool_calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "input": args})
         return {"text": text, "tool_calls": tool_calls, "stop": not tool_calls}
 
-    def complete(self, prompt: str) -> str:
-        # Reasoning models (deepseek-reasoner / deepseek-v4-pro / etc.) spend the
+    def complete(self, prompt: str, max_tokens: int | None = None) -> str:
+        # Reasoning models (deepseek-reasoner / deepseek-v4-* / etc.) spend the
         # token budget on hidden reasoning BEFORE writing `content`, so a small
         # max_tokens gets fully consumed by reasoning and returns empty content.
-        # Give generous headroom. If the model still returns empty content but
-        # produced reasoning, surface a hint rather than a silent blank.
+        # Give generous headroom; callers with long output (a decompile) pass
+        # more. If the model still returns empty content but produced reasoning,
+        # surface a hint rather than a silent blank.
         data = self._post({
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 2048, "temperature": 0,
+            "max_tokens": max_tokens or 2048, "temperature": 0,
         })
         try:
             msg = data["choices"][0]["message"]

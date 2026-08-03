@@ -274,8 +274,15 @@ Load a binary from a path or File ▸ browse. Click a function to disassemble + 
 
   <!-- DECOMPILER -->
   <aside class="decomp">
-    <div class="dc-h"><span class="t">Decompiler</span><span class="eng" id="dcEng">rule-based</span></div>
+    <div class="dc-h"><span class="t">Decompiler</span>
+      <button id="aiBtn" onclick="aiDecompile()" style="margin-left:auto" title="AI decompile the selected function">🤖 AI</button>
+      <span class="eng" id="dcEng">rule-based</span></div>
     <div class="dc-body" id="dcB"><div class="empty">Pseudo-C appears here.</div></div>
+    <div id="askBar" style="border-top:1px solid var(--line);padding:8px 10px;display:flex;gap:6px">
+      <input id="askIn" placeholder="Ask about this function…" style="flex:1;background:#0a0b0e;border:1px solid var(--line);border-radius:6px;padding:6px 9px;color:var(--ink)" onkeydown="if(event.key==='Enter')aiAsk()">
+      <button onclick="aiAsk()">Ask</button>
+    </div>
+    <div id="askOut" style="max-height:38vh;overflow:auto;padding:0 12px 12px;white-space:pre-wrap;color:var(--ink);font-size:13px"></div>
   </aside>
 </div>
 
@@ -449,6 +456,31 @@ function hlAddr(addr){
   if(dl){ dl.classList.add('sel'); dl.scrollIntoView({block:'center'}); }
 }
 
+/* ---------- AI decompile + Ask (DeepSeek/etc.) ---------- */
+async function aiDecompile(){
+  if(S.cur==null){ return; }
+  const el=document.getElementById('dcB');
+  el.innerHTML='<div class="spin">AI decompiling…</div>';
+  document.getElementById('dcEng').textContent='AI…';
+  const d=await api('/api/re/ai_decompile?id='+S.sid+'&addr='+S.cur);
+  if(d.error){ el.innerHTML='<div class="err">'+esc(d.error)+'</div>'; document.getElementById('dcEng').textContent='rule-based'; return; }
+  document.getElementById('dcEng').textContent=d.engine||'ai';
+  let h='';
+  (d.code||d.text||'').split('\n').forEach(function(line,i){
+    h+='<div class="dcln"><span class="n">'+(i+1)+'</span><span class="c">'+colorC(line)+'</span></div>';
+  });
+  if(d.explanation) h+='<div style="padding:10px 14px;color:var(--dim);border-top:1px solid var(--line);white-space:pre-wrap">'+esc(d.explanation)+'</div>';
+  el.innerHTML=h||'<div class="empty">no output</div>';
+}
+async function aiAsk(){
+  const q=document.getElementById('askIn').value.trim();
+  if(!q) return;
+  const out=document.getElementById('askOut');
+  out.textContent='thinking…';
+  const r=await post('/api/re/ask',{id:S.sid,addr:S.cur||0,question:q});
+  out.textContent = r.error ? ('⚠ '+r.error) : (r.answer||'(no answer)');
+}
+
 /* ---------- tabs ---------- */
 function tab(t){
   document.querySelectorAll('#ctabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
@@ -583,7 +615,11 @@ function wire(){
 /* boot */
 wire();
 (async()=>{ const st=await api('/api/re/status');
-  if(!st.have_capstone) document.getElementById('csTxt').textContent='pip install capstone'; })();
+  if(!st.have_capstone) document.getElementById('csTxt').textContent='pip install capstone';
+  if(!st.have_ai){ // no LLM configured -> hide AI decompile + Ask
+    var a=document.getElementById('aiBtn'); if(a) a.style.display='none';
+    var b=document.getElementById('askBar'); if(b) b.style.display='none';
+  } })();
 </script>
 </body>
 </html>

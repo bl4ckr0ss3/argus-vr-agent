@@ -301,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._collab_message(payload)
             if parsed.path == "/api/collab/stop":
                 return self._collab_stop()
-        if parsed.path in ("/api/re/load", "/api/re/asm"):
+        if parsed.path in ("/api/re/load", "/api/re/asm", "/api/re/ask"):
             length = int(self.headers.get("Content-Length", 0))
             if length > config.MAX_UPLOAD_BYTES + 2_000_000:
                 return self._json({"error": "payload too large"}, 413)
@@ -325,8 +325,13 @@ class Handler(BaseHTTPRequestHandler):
                 return 0
 
         if route == "/api/re/status":
+            try:
+                from argus.re import ai as _reai
+                have_ai = _reai._ready()
+            except Exception:
+                have_ai = False
             return self._json({"have_capstone": remod.HAVE_CAPSTONE,
-                               "have_keystone": remod.HAVE_KEYSTONE})
+                               "have_keystone": remod.HAVE_KEYSTONE, "have_ai": have_ai})
         sess = remod.get_session(sid)
         if sess is None:
             return self._json({"error": "no such session — load a binary first"}, 404)
@@ -348,6 +353,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(sess.disasm_func(_addr()))
         if route == "/api/re/decompile":
             return self._json(sess.decompile(_addr()))
+        if route == "/api/re/ai_decompile":
+            from argus.re import ai as _reai
+            return self._json(_reai.ai_decompile(sess, _addr()))
         if route == "/api/re/cfg":
             return self._json(sess.cfg(_addr()))
         if route == "/api/re/xrefs":
@@ -384,6 +392,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(D.assemble(
                 payload.get("code", ""), payload.get("arch", "x64"),
                 int(payload.get("bits", 64)), int(payload.get("addr", 0))))
+        if route == "/api/re/ask":
+            from argus import re as remod
+            sess = remod.get_session(payload.get("id", ""))
+            if sess is None:
+                return self._json({"error": "no such session — load a binary first"}, 404)
+            from argus.re import ai as _reai
+            try:
+                addr = int(payload.get("addr", 0) or 0)
+            except (ValueError, TypeError):
+                addr = 0
+            return self._json(_reai.ai_ask(sess, addr, payload.get("question", "")))
         return self._json({"error": "no route"}, 404)
 
     # --- endpoints ---------------------------------------------------------

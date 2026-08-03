@@ -64,10 +64,17 @@ def load_draft(draft: str) -> dict:
     }
 
 
+_DRAFT_CACHE: dict = {}   # dir_name -> (findings_mtime, entry-without-status)
+
+
 def list_drafts(limit: int = 0) -> list[dict]:
     """Rich review-queue listing for the Findings panel: verdict, confidence,
     signals, the tweet draft, status, the safety verdict and a link to the
-    finding's 0xblack.dev report. Newest first; `limit` caps the count (0=all)."""
+    finding's 0xblack.dev report. Newest first; `limit` caps the count (0=all).
+
+    findings.json is immutable after creation, so its parse (+ family lookup) is
+    cached per draft; only the tiny STATUS file is re-read each call. This keeps
+    the panel/Autopilot fast even with thousands of accumulated drafts."""
     out = []
     if not REVIEW_DIR.exists():
         return out
@@ -76,22 +83,45 @@ def list_drafts(limit: int = 0) -> list[dict]:
     if limit and limit > 0:
         dirs = dirs[:limit]
     for d in dirs:
-        info = load_draft(str(d))
-        struct = info.get("struct", {}) or {}
-        sha = struct.get("sha256") or ""
-        out.append({
-            "id": d.name, "status": info.get("status"),
-            "sample": struct.get("sample"), "sha256": sha,
-            "family": _family(struct),
-            "verdict": struct.get("verdict"), "confidence": struct.get("confidence"),
-            "signals": struct.get("signals", []),
-            "attack": [t.get("id") for t in struct.get("attack", [])],
-            "vt": (struct.get("vt") or {}).get("summary"),
-            "vt_url": f"https://www.virustotal.com/gui/file/{sha}" if len(sha) == 64 else None,
-            "report_url": site_publish.analysis_url(sha),  # 0xblack.dev blog page
-            "tweet": info.get("tweet"),
-            "safety": safety_reason(struct),   # None = clear to publish
-        })
+        fj = d / "findings.json"
+        try:
+            mt = fj.stat().st_mtime if fj.exists() else 0
+        except OSError:
+            mt = 0
+        cached = _DRAFT_CACHE.get(d.name)
+        if cached and cached[0] == mt:
+            entry = dict(cached[1])
+        else:
+            info = load_draft(str(d))
+            struct = info.get("struct", {}) or {}
+            sha = struct.get("sha256") or ""
+            entry = {
+                "id": d.name,
+                "sample": struct.get("sample"), "sha256": sha,
+                "family": _family(struct),
+                "verdict": struct.get("verdict"), "confidence": struct.get("confidence"),
+                "signals": struct.get("signals", []),
+                "attack": [t.get("id") for t in struct.get("attack", [])],
+                "vt": (struct.get("vt") or {}).get("summary"),
+                "vt_url": f"https://www.virustotal.com/gui/file/{sha}" if len(sha) == 64 else None,
+                "report_url": site_publish.analysis_url(sha),
+                "tweet": info.get("tweet"),
+                "safety": safety_reason(struct),
+            }
+            _DRAFT_CACHE[d.name] = (mt, entry)
+            entry = dict(entry)
+        # status changes on publish — always read the tiny STATUS file fresh
+        stf = d / "STATUS"
+        try:
+            entry["status"] = stf.read_text(encoding="utf-8").strip() if stf.exists() else "unknown"
+        except OSError:
+            entry["status"] = "unknown"
+        out.append(entry)
+    # evict cache entries for drafts that no longer exist
+    if len(_DRAFT_CACHE) > len(dirs) + 2000:
+        keep = {d.name for d in dirs}
+        for k in [k for k in _DRAFT_CACHE if k not in keep]:
+            _DRAFT_CACHE.pop(k, None)
     return out
 
 
