@@ -78,28 +78,79 @@ def _is_pe(p: Path) -> bool:
         return False
 
 
-def _iter_queue(queue_dir: Path):
-    """Yield detonatable sample files in the queue (non-recursive).
+_MAX_UNPACK_DEPTH = 4
+_OUTER_ARCHIVE_EXTS = {".rar", ".7z", ".cab", ".gz", ".tar", ".iso"}
 
-    A `.zip` (MalwareBazaar / sample feeds ship AES-encrypted zips, password
-    'infected') is unpacked automatically and its PE members are yielded, so
-    `fetch -> autohunt` works end-to-end with no manual extraction."""
+
+def _iter_queue(queue_dir: Path):
+    """Yield detonatable sample files in the queue, unpacking archives RECURSIVELY.
+
+    Sample feeds (MalwareBazaar) ship AES-encrypted zips (password 'infected'),
+    and email-delivered malware is routinely DOUBLE-wrapped: zip -> zip/rar ->
+    .js/.exe. Unpacking only one level (the old behaviour) silently dropped those
+    whole families ('nothing new in queue'). We now recurse through nested zips
+    (stdlib/pyzipper) and fall back to 7-Zip for rar/7z when a binary is present."""
     if not queue_dir.exists():
         return
     for p in sorted(queue_dir.iterdir()):
-        if not p.is_file():
+        if p.is_file():
+            yield from _unpack_and_yield(p, 0)
+
+
+def _unpack_and_yield(p: Path, depth: int):
+    """Yield p if it's a detonatable sample; otherwise unpack it one level and
+    recurse. Depth-bounded so a zip bomb / archive cycle can't loop forever."""
+    if _is_pe(p) or p.suffix.lower() in _SAMPLE_EXTS:
+        yield p
+        return
+    if depth >= _MAX_UNPACK_DEPTH:
+        return
+    for ex in _extract_one_level(p):
+        try:
+            if ex.resolve() == p.resolve():
+                continue   # unpack_archive copies non-archives back as-is
+        except OSError:
             continue
-        if p.suffix.lower() == ".zip":
-            try:
-                from .tools.malware import unpack_archive
-                extracted, _meta = unpack_archive(p)
-            except Exception:
-                continue
-            for ex in extracted:
-                if _is_pe(ex) or ex.suffix.lower() in _SAMPLE_EXTS:
-                    yield ex
-        elif p.suffix.lower() in _SAMPLE_EXTS:
-            yield p
+        yield from _unpack_and_yield(ex, depth + 1)
+
+
+def _extract_one_level(p: Path) -> list[Path]:
+    """Unpack a single archive layer. zip (incl. AES) via unpack_archive; rar/7z/
+    cab via a 7-Zip binary when available. Returns [] for non-archives / failures."""
+    import zipfile
+    try:
+        if zipfile.is_zipfile(p):
+            from .tools.malware import unpack_archive
+            return unpack_archive(p)[0]
+    except Exception:
+        return []
+    if p.suffix.lower() in _OUTER_ARCHIVE_EXTS:
+        return _extract_with_7z(p)
+    return []
+
+
+def _extract_with_7z(p: Path) -> list[Path]:
+    """Best-effort rar/7z/cab extraction via a 7-Zip binary (PATH or C:\\Tools).
+    Tries the known sample passwords. Never raises; [] when 7z isn't installed."""
+    import shutil
+    import subprocess
+    exe = next((c for c in ("7z", "7za", r"C:\Tools\7z.exe", r"C:\Tools\7za.exe",
+                            r"C:\Program Files\7-Zip\7z.exe")
+                if shutil.which(c) or Path(c).exists()), None)
+    if not exe:
+        return []
+    out = config.QUARANTINE_DIR / (p.stem + "_7z")
+    out.mkdir(parents=True, exist_ok=True)
+    for pw in list(config.ZIP_PASSWORDS) + [""]:
+        try:
+            subprocess.run([exe, "x", "-y", f"-p{pw}", f"-o{out}", str(p)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        except Exception:
+            continue
+        files = [f for f in out.rglob("*") if f.is_file()]
+        if files:
+            return files
+    return []
 
 
 # ---------------------------------------------------------------------------

@@ -479,26 +479,29 @@ class Handler(BaseHTTPRequestHandler):
         # (the host seen-ledger stays empty unless you detonate ON the host).
         try:
             from argus import autohunt, publish as _pub
-            drafts = _pub.list_drafts()
-            verdicts, published = {}, 0
+            drafts = _pub.list_drafts()   # ONE scan; parses cached. Everything below derives from it.
+            verdicts, published, pending_items = {}, 0, []
             for x in drafts:
                 v = x.get("verdict") or "unknown"
                 verdicts[v] = verdicts.get(v, 0) + 1
-                if str(x.get("status") or "").startswith("publish"):
+                st = str(x.get("status") or "")
+                if st.startswith("publish"):
                     published += 1
+                elif st != "approved":
+                    pending_items.append(x)   # truly awaiting a human, not already-published
             try:
                 host_seen = len(autohunt._load_seen())   # non-zero only for host-side detonation
             except Exception:
                 host_seen = 0
-            pending = autohunt.pending_reviews()
             out["detonation"] = {
                 "seen_total": max(len(drafts), host_seen),  # host-visible findings
                 "verdicts": verdicts,
                 "published": published,
             }
             out["reviews"] = {
-                "pending": len(pending),
-                "items": [{"dir": p["dir"], "status": p["status"], "tweet": p["tweet"][:120]} for p in pending[:50]],
+                "pending": len(pending_items),
+                "items": [{"dir": x.get("id"), "status": x.get("status"),
+                           "tweet": (x.get("tweet") or "")[:120]} for x in pending_items[:50]],
             }
         except Exception as e:
             out["detonation"] = {"seen_total": 0, "verdicts": {}, "published": 0}

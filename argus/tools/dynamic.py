@@ -45,6 +45,12 @@ _DYNAMIC_DIR.mkdir(parents=True, exist_ok=True)
 # than 120s to get past its env check and fire, so the cap is configurable
 # instead of hard-wired. The CLI --timeout is still honoured up to this ceiling.
 _MAX_EXECUTION_SECONDS = int(os.environ.get("ARGUS_DETONATE_MAX", "600"))
+# Injection loaders (GuLoader, packed droppers) run a launcher that spawns/hollows
+# a child and EXITS in a second or two — the malicious behaviour is in the child.
+# If we stop monitoring the instant the launcher dies we capture nothing. So after
+# the launcher exits, keep the probes running for a short settle window (capped by
+# the overall timeout) to catch the injected payload's file/net/process activity.
+_SETTLE_SECONDS = int(os.environ.get("ARGUS_SETTLE_SECONDS", "20"))
 
 # --- Credential guard ------------------------------------------------------
 # A detonated binary runs with our privileges and can read the process
@@ -329,10 +335,19 @@ def _execute_sample(sample_path: str, timeout: int = _MAX_EXECUTION_SECONDS) -> 
             sample_path, shell=True,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        start = time.time()
+        settled = 0.0
         try:
             proc.wait(timeout=timeout)
             exit_code = proc.returncode
             killed = False
+            # Launcher exited — keep the probes capturing for a settle window so an
+            # injected child (the real payload) is observed. Never exceed the timeout.
+            elapsed = time.time() - start
+            settle = max(0.0, min(_SETTLE_SECONDS, timeout - elapsed))
+            if settle:
+                time.sleep(settle)
+                settled = settle
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
@@ -343,7 +358,8 @@ def _execute_sample(sample_path: str, timeout: int = _MAX_EXECUTION_SECONDS) -> 
             "executed": True,
             "exit_code": exit_code,
             "killed_after_timeout": killed,
-            "runtime_seconds": timeout if killed else None,
+            "runtime_seconds": timeout if killed else round(time.time() - start, 1),
+            "settle_seconds": round(settled, 1),
         }
     except OSError as e:
         return {"executed": False, "error": str(e)}
