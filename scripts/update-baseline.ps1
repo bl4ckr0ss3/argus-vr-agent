@@ -69,9 +69,16 @@ Write-Host "  packing (no .env, no runs/): $([IO.Path]::GetFileName($stage))"
 Compress-Archive -Path $include -DestinationPath $stage -Force
 if ((Get-ChildItem $stage).Length -lt 1000) { throw "staged zip looks empty" }
 
-# --- 2. Revert + boot the baseline ---------------------------------------------
-Write-Host "  revert -> $Snapshot" -ForegroundColor Yellow
-VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+# --- 2. Revert to the baseline, OR create it from the current VM state ----------
+# If CLEANBASELINE doesn't exist (e.g. you just deleted it to change the VM's RAM),
+# skip the revert and snapshot whatever is currently booted instead of failing.
+$snapList = (& $VMRUN @($base + @("listSnapshots",$Vmx)) 2>&1) -join "`n"
+if ($snapList -match [regex]::Escape($Snapshot)) {
+    Write-Host "  revert -> $Snapshot" -ForegroundColor Yellow
+    VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+} else {
+    Write-Host "  '$Snapshot' not found — creating it from the current VM state" -ForegroundColor Yellow
+}
 $running = ((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx)
 if (-not $running) { VMquiet ($base + @("start",$Vmx,"nogui")) }
 Write-Host "  waiting for desktop session (auto-login)..."
