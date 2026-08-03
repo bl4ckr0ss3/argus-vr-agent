@@ -37,6 +37,7 @@ param(
     [string]$ArgusRuns  = "Z:\argus-results\runs",      # (legacy/unused - results now copied out)
     [string]$HostRunsDir= "C:\argus-results\runs",      # host dir the web Autopilot reads
     [int]$BootWaitSec   = 45,                            # seconds to let the guest + Tools come up
+    [int]$DetonateTimeout = 75,                          # per-sample detonation window (was 120 default; most loaders/RATs show their hand well inside 75s)
     [string]$Vmrun      = "",                            # auto-detected if blank
     [string]$VmPassword = ""                             # VM ENCRYPTION password (if the VM is encrypted)
 )
@@ -128,7 +129,7 @@ foreach ($s in $samples) {
         $gps   = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
         $guestRuns = "$GuestRepo\runs"
         $psCmd = "`$env:ARGUS_RUNS='$guestRuns'; Set-Location '$GuestRepo'; " +
-                 "python run.py autohunt --once *> '$glog'; " +
+                 "python run.py autohunt --once --timeout $DetonateTimeout *> '$glog'; " +
                  "Remove-Item '$gzip' -EA SilentlyContinue; " +
                  "if (Test-Path '$guestRuns\review_queue') { Compress-Archive -Path '$guestRuns\review_queue\*' -DestinationPath '$gzip' -Force -EA SilentlyContinue }; exit 0"
         & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$psCmd)) 2>&1 | Out-Null

@@ -472,26 +472,36 @@ class Handler(BaseHTTPRequestHandler):
             out["intake"] = {"samples": []}
             out["errors"]["intake"] = str(e)
 
-        # Detonation history (seen ledger shape -> verdict counts)
+        # Host-visible pipeline. Detonation runs in the GUEST, which keeps its own
+        # seen-ledger the host never sees; the only artifacts that reach the host
+        # are the DRAFTS copied into the review queue. So derive findings/verdicts/
+        # published from the drafts — that's what actually moves during a VM hunt
+        # (the host seen-ledger stays empty unless you detonate ON the host).
         try:
-            from argus import autohunt
-            seen = autohunt._load_seen()
-            verdicts = {}
-            for sha, rec in seen.items():
-                v = rec.get("verdict", "unknown")
+            from argus import autohunt, publish as _pub
+            drafts = _pub.list_drafts()
+            verdicts, published = {}, 0
+            for x in drafts:
+                v = x.get("verdict") or "unknown"
                 verdicts[v] = verdicts.get(v, 0) + 1
+                if str(x.get("status") or "").startswith("publish"):
+                    published += 1
+            try:
+                host_seen = len(autohunt._load_seen())   # non-zero only for host-side detonation
+            except Exception:
+                host_seen = 0
             pending = autohunt.pending_reviews()
             out["detonation"] = {
-                "seen_total": len(seen),
+                "seen_total": max(len(drafts), host_seen),  # host-visible findings
                 "verdicts": verdicts,
-                "statuses": {},
+                "published": published,
             }
             out["reviews"] = {
                 "pending": len(pending),
                 "items": [{"dir": p["dir"], "status": p["status"], "tweet": p["tweet"][:120]} for p in pending[:50]],
             }
         except Exception as e:
-            out["detonation"] = {"seen_total": 0, "verdicts": {}}
+            out["detonation"] = {"seen_total": 0, "verdicts": {}, "published": 0}
             out["reviews"] = {"pending": 0, "items": []}
             out["errors"]["detonation"] = str(e)
 

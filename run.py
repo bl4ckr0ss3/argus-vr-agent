@@ -77,6 +77,7 @@ def cmd_ask(args) -> None:
 
 
 def cmd_web(args) -> None:
+    _try_dotenv()   # host-side server needs VT/LLM keys to publish + run the analyst
     from web.server import serve
     serve(host=args.host, port=args.port)
 

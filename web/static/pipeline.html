@@ -77,9 +77,9 @@
 
 <div class="bridges">
   <div class="bridge"><div class="n cy" id="b-intake">—</div><div class="l">Intake Queue</div><div class="d" id="d-intake">waiting for data</div></div>
-  <div class="bridge"><div class="n grn" id="b-seen">—</div><div class="l">Samples Analyzed</div><div class="d" id="d-seen">detonated + analyzed</div></div>
+  <div class="bridge"><div class="n grn" id="b-seen">—</div><div class="l">Findings</div><div class="d" id="d-seen">suspicious drafts</div></div>
   <div class="bridge"><div class="n xp" id="b-review">—</div><div class="l">Pending Review</div><div class="d" id="d-review">human-gated drafts</div></div>
-  <div class="bridge"><div class="n" id="b-published">—</div><div class="l">Published</div><div class="d" id="d-published">VT + site</div></div>
+  <div class="bridge"><div class="n grn" id="b-published">—</div><div class="l">Published</div><div class="d" id="d-published">VT + site</div></div>
 </div>
 
 <div class="grid">
@@ -147,15 +147,18 @@ async function refresh(){
   $('st-fetch-v').textContent = intake.length ? intake.length+' queued' : 'idle';
   $('st-fetch').className = 'dot '+(intake.length?'on':'idle');
 
-  // detonation
+  // detonation (host-visible findings) + published
   const det = d.detonation||{};
-  $('b-seen').textContent = det.seen_total||0;
-  $('d-seen').textContent = Object.entries(det.verdicts||{}).map(([k,v])=>k+': '+v).join(' · ')||'no verdicts yet';
+  const findings = det.seen_total||0, published = det.published||0;
+  $('b-seen').textContent = findings;
+  $('b-published').textContent = published;
+  $('d-published').textContent = published ? 'VT + site' : 'none yet';
+  $('d-seen').textContent = Object.entries(det.verdicts||{}).map(([k,v])=>k+': '+v).join(' · ')||'no findings yet';
   const v = det.verdicts||{};
   $('verdicts').innerHTML = Object.entries(v).length ? Object.entries(v).map(([k,val])=>
     '<span class="verdict">'+esc(k)+': <b>'+val+'</b></span>').join('') : '<span class="verdict">(none)</span>';
-  $('st-detonate-v').textContent = (det.seen_total||0) ? (det.seen_total)+' analyzed' : 'idle';
-  $('st-detonate').className = 'dot '+(det.seen_total?'on':'idle');
+  $('st-detonate-v').textContent = findings ? findings+' findings' : 'idle';
+  $('st-detonate').className = 'dot '+(findings?'on':'idle');
 
   // reviews
   const rev = d.reviews||{items:[]};
@@ -196,7 +199,7 @@ async function refresh(){
 }
 
 refresh();
-setInterval(refresh, 4000);
+setInterval(refresh, 2500);
 </script>
 </body>
 </html>
