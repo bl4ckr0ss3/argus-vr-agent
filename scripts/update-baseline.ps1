@@ -28,7 +28,8 @@ param(
     [string]$GuestRepo  = "C:\argus-vr-agent",
     [string]$VmPassword = "",
     [string]$Vmrun      = "",
-    [switch]$With7z                                     # also copy host 7-Zip into guest C:\Tools (unlocks .rar samples)
+    [switch]$With7z,                                    # also copy host 7-Zip into guest C:\Tools (unlocks .rar samples)
+    [switch]$Suspend                                    # snapshot a SUSPENDED (RAM) state -> hunts resume in seconds, no boot
 )
 
 $ErrorActionPreference = "Stop"
@@ -132,23 +133,32 @@ if ($With7z) {
     Write-Host "    copied 7z.exe + 7z.dll -> C:\Tools" -ForegroundColor Green
 }
 
-# --- 4. Graceful shutdown (never hard-stop a running snapshot) ------------------
-Write-Host "  shutting the guest down cleanly..."
-VMtry ($base + @("stop",$Vmx,"soft"))
-$off = $false; $deadline = (Get-Date).AddSeconds(180)
+# --- 4. Bring the guest to the snapshot power state (never a hard stop) ---------
+if ($Suspend) {
+    # FAST-RESUME baseline: suspend to RAM so every hunt reverts to a LIVE, logged-
+    # in desktop in ~5-10s instead of a full ~30-90s Windows boot. Suspend writes
+    # the memory image and powers down cleanly -> the disk chain stays intact.
+    Write-Host "  suspending guest (fast-resume baseline)..."
+    VM ($base + @("suspend",$Vmx)) | Out-Null
+} else {
+    Write-Host "  shutting the guest down cleanly..."
+    VMtry ($base + @("stop",$Vmx,"soft"))
+}
+$stopped = $false; $deadline = (Get-Date).AddSeconds(180)
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 4
-    if (-not (((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx))) { $off = $true; break }
+    if (-not (((& $VMRUN @($base + @("list")) 2>&1) -join "`n") -match [regex]::Escape($Vmx))) { $stopped = $true; break }
 }
-if (-not $off) { throw "guest did not power off within 180s - re-snapshot manually once it is off (do NOT hard-stop)" }
-Write-Host "  powered off" -ForegroundColor Green
+if (-not $stopped) { throw "guest did not reach a stopped/suspended state within 180s (do NOT hard-stop)" }
+Write-Host ("  " + $(if ($Suspend) { "suspended (fast-resume)" } else { "powered off" })) -ForegroundColor Green
 
-# --- 5. Replace the CLEANBASELINE snapshot (powered-off) ------------------------
+# --- 5. Replace the CLEANBASELINE snapshot -------------------------------------
 Write-Host "  re-taking snapshot '$Snapshot'"
 VMtry ($base + @("deleteSnapshot",$Vmx,$Snapshot))   # non-fatal if it was already gone
 VM  ($base + @("snapshot",$Vmx,$Snapshot)) | Out-Null
 
-Write-Host "`n== baseline updated: '$Snapshot' now has recursive-unpack + settle-window + latest autohunt ==" -ForegroundColor Cyan
+$mode = if ($Suspend) { "SUSPENDED (resumes in seconds — no boot)" } else { "powered-off" }
+Write-Host "`n== baseline updated: '$Snapshot' [$mode] with recursive-unpack + settle-window + latest autohunt ==" -ForegroundColor Cyan
 Write-Host "Run your hunt again:" -ForegroundColor Cyan
 Write-Host "  .\scripts\autonomous.ps1 -Vmx `"$Vmx`" -VmPassword $VmPassword -GuestUser $GuestUser -GuestPassword $GuestPassword -HostRunsDir C:\argus-results\runs"
 Write-Host "`nTip: for .rar samples, put 7z.exe in C:\Tools INSIDE the guest before running this, so it's baked into the snapshot." -ForegroundColor DarkGray

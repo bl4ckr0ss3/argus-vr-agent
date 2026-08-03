@@ -97,10 +97,11 @@ foreach ($s in $samples) {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
         Write-Host "  start (headless)"
-        # A RUNNING-state snapshot leaves the VM already powered on after revert.
-        # Wait for the desktop; a slow/failed auto-login is usually transient, so
-        # revert+reboot and try ONCE more before writing the sample off (that lost
-        # ~1 sample in 4 to a single unlucky boot).
+        # Wait-Desktop resumes/boots as needed: a SUSPENDED baseline comes back to a
+        # live desktop in seconds (explorer already running); a powered-off baseline
+        # boots + auto-logs-in. A slow/failed login is usually transient, so
+        # revert+retry ONCE before writing the sample off (that lost ~1 in 4 to a
+        # single unlucky boot).
         Write-Host "  waiting for desktop session (auto-login)..."
         if (-not (Wait-Desktop)) {
             Write-Host "  desktop not up - reverting + retrying once" -ForegroundColor DarkYellow
@@ -153,16 +154,16 @@ foreach ($s in $samples) {
     catch {
         Write-Host "  ! $($s.Name): $($_.Exception.Message)" -ForegroundColor Red
     }
-    finally {
-        # always return to a clean snapshot before the next sample
-        VMquiet ($base + @("revertToSnapshot",$Vmx,$Snapshot))
-    }
+    # NOTE: no per-sample cleanup revert here. Each iteration reverts at the TOP
+    # (line ~98) before it touches anything, so the NEXT sample already starts from
+    # the clean snapshot regardless of how this one ended — the isolation guarantee
+    # is fully preserved. Dropping the redundant second revert saves one revert per
+    # sample (~10s powered-off, more when reverting a suspended/RAM snapshot).
 }
 
-# Leave the VM AT the clean snapshot. Do NOT hard-stop here: a hard power-off
-# right after reverting a running-state snapshot orphans the current-state delta
-# disk and corrupts the chain. The final finally{} already reverted; leaving it
-# there is safe, and the next run reverts again anyway.
+# Leave the VM AT the clean snapshot. Do NOT hard-stop: a hard power-off right
+# after reverting orphans the current-state delta disk and corrupts the chain.
+# A single revert here wipes the last sample's malware; the next run reverts again.
 VMquiet ($base + @("revertToSnapshot",$Vmx,$Snapshot))
 Write-Host "`n== hunt-loop complete. Drafts copied to $HostRunsDir ==" -ForegroundColor Cyan
 Write-Host "Review/publish on the host: http://127.0.0.1:8765/panel"
