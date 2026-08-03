@@ -164,3 +164,19 @@ def test_pseudo_no_capstone_shape():
     # decompile of empty rows returns an empty-but-valid structure
     out = P.decompile([], "FUN_0", "x64")
     assert out["lines"] == [] and out["text"] == ""
+
+
+def test_session_cache_bounded():
+    """Loading many distinct binaries must not grow the session cache unboundedly."""
+    old_max = S._SESSION_CACHE_MAX
+    S._SESSION_CACHE_MAX = 3
+    try:
+        for i in range(6):
+            b = _tiny_pe()
+            # vary content hash so each load is a distinct session
+            b = b[:0x100] + bytes([i % 251]) + b[0x101:]
+            lr = S.load_binary(f"s{i}.exe", b)
+            assert "error" not in lr
+        assert len(S._SESSIONS) <= 3, f"cache grew to {len(S._SESSIONS)} (max 3)"
+    finally:
+        S._SESSION_CACHE_MAX = old_max

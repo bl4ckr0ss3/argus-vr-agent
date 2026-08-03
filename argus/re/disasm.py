@@ -98,15 +98,28 @@ def _flow(insn) -> str:
 
 
 def _branch_target(insn) -> int | None:
-    """Immediate call/jmp target, if the operand is a direct address."""
+    """Immediate call/jmp target, if the operand is a direct address.
+
+    Handles x86 (X86_OP_IMM) and ARM/ARM64 (ARM_OP_IMM / ARM64_OP_IMM) — the old
+    code only checked x86, so cross-references for ARM binaries were never found.
+    """
     if not HAVE_CAPSTONE:
         return None
     try:
         if capstone.CS_GRP_JUMP not in insn.groups and capstone.CS_GRP_CALL not in insn.groups:
             return None
-        for op in insn.operands:
-            if op.type == capstone.x86.X86_OP_IMM:
-                return op.imm
+        if getattr(capstone, "x86", None) is not None:
+            for op in insn.operands:
+                if op.type == capstone.x86.X86_OP_IMM:
+                    return op.imm
+        if getattr(capstone, "arm", None) is not None:
+            for op in insn.operands:
+                if (op.type == getattr(capstone.arm, "ARM_OP_IMM", -1)):
+                    return op.imm
+        if getattr(capstone, "arm64", None) is not None:
+            for op in insn.operands:
+                if (op.type == getattr(capstone.arm64, "ARM64_OP_IMM", -1)):
+                    return op.imm
     except Exception:
         return None
     return None

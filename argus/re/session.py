@@ -19,6 +19,11 @@ HAVE_KEYSTONE = D.HAVE_KEYSTONE
 
 _SESSIONS: dict[str, "Session"] = {}
 _MAX_BYTES = 64 * 1024 * 1024  # 64 MB guard
+# Bound the session cache so analyzing many distinct binaries doesn't leak memory
+# indefinitely. Sessions are cheap to reload (pure parse on re-open), so evicting
+# the least-recently-used ones is safe — the UI just re-parses on demand.
+_SESSION_CACHE_MAX = 40
+_SESSION_ORDER: list[str] = []  # sha256 of sessions, most-recent first
 
 
 class Session:
@@ -187,8 +192,20 @@ def load_binary(name: str, data: bytes | None = None, path: str | None = None) -
         return {"error": "file too large"}
     sess = Session(name or "sample", data)
     _SESSIONS[sess.sha256] = sess
+    # LRU bookkeeping: touch (move to front) + evict LRU when over the bound
+    if sess.sha256 in _SESSION_ORDER:
+        _SESSION_ORDER.remove(sess.sha256)
+    _SESSION_ORDER.insert(0, sess.sha256)
+    while len(_SESSION_ORDER) > _SESSION_CACHE_MAX:
+        old = _SESSION_ORDER.pop()
+        _SESSIONS.pop(old, None)
     return sess.summary()
 
 
 def get_session(sid: str) -> Session | None:
-    return _SESSIONS.get(sid)
+    sess = _SESSIONS.get(sid)
+    if sess is not None and sid in _SESSION_ORDER:
+        # move to front on access (cheap list remove+insert; list is small)
+        _SESSION_ORDER.remove(sid)
+        _SESSION_ORDER.insert(0, sid)
+    return sess
