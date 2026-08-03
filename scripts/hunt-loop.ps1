@@ -38,6 +38,9 @@ param(
     [string]$HostRunsDir= "C:\argus-results\runs",      # host dir the web Autopilot reads
     [int]$BootWaitSec   = 45,                            # seconds to let the guest + Tools come up
     [int]$DetonateTimeout = 60,                          # per-sample detonation window; commodity stealers/loaders reveal C2+drops well inside 60s (raise if you hunt gated/beaconing families)
+    [switch]$IsolateEach,                                # OFF = batch mode (default): one boot detonates ALL samples, one final revert. ON = old behaviour: per-sample revert+boot for full isolation.
+    [int]$Parallel      = 3,                             # guest-side parallel detonations (batch mode only)
+    [switch]$Fast,                                       # ARGUS_FAST=1: skip procmon/tshark/snapshots for max parallel throughput. REQUIRED if -Parallel > 1 (procmon is single-instance)
     [string]$Vmrun      = "",                            # auto-detected if blank
     [string]$VmPassword = ""                             # VM ENCRYPTION password (if the VM is encrypted)
 )
@@ -89,89 +92,132 @@ function Wait-Desktop {
 
 $samples = Get-ChildItem -Path $SampleDir -Filter *.zip -File
 if (-not $samples) { Write-Host "No .zip samples in $SampleDir"; exit 1 }
-Write-Host "== ARGUS hunt-loop: $($samples.Count) sample(s) ==" -ForegroundColor Cyan
+# procmon is a single-instance global tool — parallel detonations would corrupt
+# each other's capture. Guard against silent misconfiguration.
+if ($Parallel -gt 1 -and -not $Fast) {
+    Write-Host "WARNING: -Parallel $Parallel without -Fast (procmon is single-instance; " -ForegroundColor Yellow
+    Write-Host "         parallel runs would corrupt each other's telemetry)." -ForegroundColor Yellow
+    Write-Host "         Falling back to serial batch (safer). Use  -Fast -Parallel N  for max throughput." -ForegroundColor Yellow
+    $Parallel = 1
+}
+Write-Host "== ARGUS hunt-loop: $($samples.Count) sample(s), mode=$([string](if($IsolateEach){'isolated per-sample'}else{"batch (parallel=$Parallel" + $(if($Fast){', FAST'}else{''}) + ')'})) ==" -ForegroundColor Cyan
 
 $batchStart = Get-Date
-foreach ($s in $samples) {
-    Write-Host "`n--- $($s.Name) ---" -ForegroundColor Yellow
-    $t0 = Get-Date; $tReverted = $t0; $tReady = $t0; $tDeton = $t0
+
+function Invoke-GuestAutohunt {
+    # run autohunt once in the guest; package drafts; copy back. Outputs:
+    #   $global:gLogText (tail)  $global:hasDraft (bool)
+    $glog  = "C:\Users\Public\argus-autohunt.log"
+    $gzip  = "C:\Users\Public\argus-review.zip"
+    $gps   = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $guestRuns = "$GuestRepo\runs"
+    # batch mode: drain the WHOLE intake queue with parallel detonations. We set
+    # ARGUS_PROFILE=production so each detonation is capped at $DetonateTimeout and
+    # ARGUS_PARALLEL enables concurrent detonations inside the guest.
+    $envStr = "`$env:ARGUS_RUNS='$guestRuns'; `$env:ARGUS_PROFILE='production'; `$env:ARGUS_PARALLEL='$Parallel'; "
+    if ($Fast) { $envStr += "`$env:ARGUS_FAST='1'; " }
+    if (-not $IsolateEach) { $envStr += "`$env:ARGUS_DETONATE_MAX='$DetonateTimeout'; " }
+    $psCmd = $envStr +
+             "Set-Location '$GuestRepo'; " +
+             "python run.py autohunt --once --timeout $DetonateTimeout *> '$glog'; " +
+             "Remove-Item '$gzip' -EA SilentlyContinue; " +
+             "if (Test-Path '$guestRuns\review_queue') { Compress-Archive -Path '$guestRuns\review_queue\*' -DestinationPath '$gzip' -Force -EA SilentlyContinue }; exit 0"
+    & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$psCmd)) 2>&1 | Out-Null
+
+    $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
+    & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
+    $global:gLogText = if (Test-Path $hostLog) { Get-Content $hostLog -Raw -EA SilentlyContinue } else { "" }
+
+    $hostZip = Join-Path $env:TEMP "argus-review.zip"
+    Remove-Item $hostZip -EA SilentlyContinue
+    & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$gzip,$hostZip)) 2>&1 | Out-Null
+    $global:hasDraft = Test-Path $hostZip
+    if ($global:hasDraft) {
+        $rq = Join-Path $HostRunsDir "review_queue"
+        New-Item -ItemType Directory -Force $rq | Out-Null
+        Expand-Archive -Path $hostZip -DestinationPath $rq -Force
+    }
+}
+
+if ($IsolateEach) {
+    # ---- per-sample isolation (one revert+boot per sample) ----
+    foreach ($s in $samples) {
+        Write-Host "`n--- $($s.Name) ---" -ForegroundColor Yellow
+        $t0 = Get-Date; $tReverted = $t0; $tReady = $t0; $tDeton = $t0
+        try {
+            Write-Host "  revert -> $Snapshot"
+            VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+            $tReverted = Get-Date
+            Write-Host "  start (headless)"
+            Write-Host "  waiting for desktop session (auto-login)..."
+            if (-not (Wait-Desktop)) {
+                Write-Host "  desktop not up - reverting + retrying once" -ForegroundColor DarkYellow
+                VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+                if (-not (Wait-Desktop)) {
+                    throw "no desktop session (explorer.exe) after 2 boots - if this is EVERY sample, enable AUTO-LOGIN in CLEANBASELINE (netplwiz) + re-snapshot"
+                }
+            }
+            Write-Host "  desktop ready"; $tReady = Get-Date
+
+            $guestZip = Join-Path $GuestIntake $s.Name
+            Write-Host "  copy sample into guest intake"
+            VM ($auth + @("copyFileFromHostToGuest",$Vmx,$s.FullName,$guestZip)) | Out-Null
+
+            Write-Host "  detonate (autohunt --once, isolated)"
+            $tDeton = Get-Date
+            Invoke-GuestAutohunt
+            if ($global:hasDraft) {
+                $n = (Get-ChildItem (Join-Path $HostRunsDir "review_queue") -Directory -EA SilentlyContinue).Count
+                Write-Host "  done -> drafts copied to host ($HostRunsDir\review_queue)" -ForegroundColor Green
+            } else {
+                Write-Host "  no draft produced (benign/inconclusive) - log tail:" -ForegroundColor DarkYellow
+                if ($global:gLogText) { ($global:gLogText -split "`n" | Select-Object -Last 18) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            }
+        }
+        catch { Write-Host "  ! $($s.Name): $($_.Exception.Message)" -ForegroundColor Red }
+        $now = Get-Date
+        $rev = [int]($tReverted - $t0).TotalSeconds
+        $res = [int]($tReady - $tReverted).TotalSeconds
+        $det = [int]($tDeton - $tReady).TotalSeconds
+        $cpy = [int]($now - $tDeton).TotalSeconds
+        $tot = [int]($now - $t0).TotalSeconds
+        Write-Host ("  [timing] revert ${rev}s | resume-wait ${res}s | detonate ${det}s | copyout ${cpy}s | TOTAL ${tot}s") -ForegroundColor DarkCyan
+    }
+} else {
+    # ---- batch mode: one boot, all samples, one final revert ----
+    $t0 = Get-Date
+    Write-Host "`n--- BATCH: $($samples.Count) sample(s), single boot + parallel detonation ---" -ForegroundColor Yellow
     try {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
-        $tReverted = Get-Date
-        Write-Host "  start (headless)"
-        # Wait-Desktop resumes/boots as needed: a SUSPENDED baseline comes back to a
-        # live desktop in seconds (explorer already running); a powered-off baseline
-        # boots + auto-logs-in. A slow/failed login is usually transient, so
-        # revert+retry ONCE before writing the sample off (that lost ~1 in 4 to a
-        # single unlucky boot).
-        Write-Host "  waiting for desktop session (auto-login)..."
+        Write-Host "  start (headless) + wait for desktop..."
         if (-not (Wait-Desktop)) {
             Write-Host "  desktop not up - reverting + retrying once" -ForegroundColor DarkYellow
             VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
-            if (-not (Wait-Desktop)) {
-                throw "no desktop session (explorer.exe) after 2 boots - if this is EVERY sample, enable AUTO-LOGIN in CLEANBASELINE (netplwiz) + re-snapshot"
-            }
+            if (-not (Wait-Desktop)) { throw "no desktop session after 2 boots" }
         }
         Write-Host "  desktop ready"
-        $tReady = Get-Date
 
-        $guestZip = Join-Path $GuestIntake $s.Name
-        Write-Host "  copy sample into guest intake"
-        VM ($auth + @("copyFileFromHostToGuest",$Vmx,$s.FullName,$guestZip)) | Out-Null
+        Write-Host "  copy $($samples.Count) sample(s) into guest intake"
+        foreach ($s in $samples) {
+            VMquiet ($auth + @("copyFileFromHostToGuest",$Vmx,$s.FullName,(Join-Path $GuestIntake $s.Name)))
+        }
 
-        Write-Host "  detonate (autohunt --once, isolated)"
-        # Two guest quirks handled here:
-        #  1. cmd.exe is blocked in this guest's automation session (a security
-        #     policy makes runProgramInGuest cmd.exe return a generic exit 1);
-        #     PowerShell works, so orchestrate through it.
-        #  2. the VMware shared folder is not reliably reachable from that
-        #     session, so autohunt writes to the GUEST-LOCAL runs dir and we
-        #     package the review-queue drafts + copy them out (copyFileFromGuest
-        #     ToHost is reliable) into $HostRunsDir where Autopilot reads them.
-        $glog  = "C:\Users\Public\argus-autohunt.log"
-        $gzip  = "C:\Users\Public\argus-review.zip"
-        $gps   = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        $guestRuns = "$GuestRepo\runs"
-        $psCmd = "`$env:ARGUS_RUNS='$guestRuns'; Set-Location '$GuestRepo'; " +
-                 "python run.py autohunt --once --timeout $DetonateTimeout *> '$glog'; " +
-                 "Remove-Item '$gzip' -EA SilentlyContinue; " +
-                 "if (Test-Path '$guestRuns\review_queue') { Compress-Archive -Path '$guestRuns\review_queue\*' -DestinationPath '$gzip' -Force -EA SilentlyContinue }; exit 0"
-        & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$psCmd)) 2>&1 | Out-Null
-        $tDeton = Get-Date
-        # bring back the diagnostic log + the drafts package
-        $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
-        & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
-        $hostZip = Join-Path $env:TEMP "argus-review.zip"
-        Remove-Item $hostZip -EA SilentlyContinue
-        & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$gzip,$hostZip)) 2>&1 | Out-Null
-        if (Test-Path $hostZip) {
-            $rq = Join-Path $HostRunsDir "review_queue"
-            New-Item -ItemType Directory -Force $rq | Out-Null
-            Expand-Archive -Path $hostZip -DestinationPath $rq -Force
-            $n = (Get-ChildItem $rq -Directory).Count
-            Write-Host "  done -> drafts copied to host ($rq)" -ForegroundColor Green
+        Write-Host "  detonate batch (autohunt --once, parallel=$Parallel, timeout=$DetonateTimeout s/sample)"
+        Invoke-GuestAutohunt
+
+        if ($global:hasDraft) {
+            $n = (Get-ChildItem (Join-Path $HostRunsDir "review_queue") -Directory -EA SilentlyContinue).Count
+            Write-Host "  done -> $n draft(s) copied to host ($HostRunsDir\review_queue)" -ForegroundColor Green
         } else {
-            Write-Host "  no draft produced (benign/inconclusive, or error) - log tail:" -ForegroundColor DarkYellow
-            if (Test-Path $hostLog) { Get-Content $hostLog -Tail 18 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
+            Write-Host "  no drafts produced - log tail:" -ForegroundColor DarkYellow
+            if ($global:gLogText) { ($global:gLogText -split "`n" | Select-Object -Last 20) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
         }
     }
-    catch {
-        Write-Host "  ! $($s.Name): $($_.Exception.Message)" -ForegroundColor Red
-    }
-    # per-stage timing so we can SEE the bottleneck (revert+resume vs detonate vs copy-out)
+    catch { Write-Host "  ! BATCH: $($_.Exception.Message)" -ForegroundColor Red }
     $now = Get-Date
-    $rev = [int]($tReverted - $t0).TotalSeconds
-    $res = [int]($tReady - $tReverted).TotalSeconds
-    $det = [int]($tDeton - $tReady).TotalSeconds
-    $cpy = [int]($now - $tDeton).TotalSeconds
     $tot = [int]($now - $t0).TotalSeconds
-    Write-Host ("  [timing] revert ${rev}s | resume-wait ${res}s | detonate ${det}s | copyout ${cpy}s | TOTAL ${tot}s") -ForegroundColor DarkCyan
-    # NOTE: no per-sample cleanup revert here. Each iteration reverts at the TOP
-    # (line ~98) before it touches anything, so the NEXT sample already starts from
-    # the clean snapshot regardless of how this one ended — the isolation guarantee
-    # is fully preserved. Dropping the redundant second revert saves one revert per
-    # sample (~10s powered-off, more when reverting a suspended/RAM snapshot).
+    Write-Host ("  [timing] BATCH TOTAL ${tot}s for $($samples.Count) sample(s) = ~$([int]($tot / $samples.Count))s/sample (vs ~376s/sample isolated)") -ForegroundColor DarkCyan
 }
 
 # Leave the VM AT the clean snapshot. Do NOT hard-stop: a hard power-off right

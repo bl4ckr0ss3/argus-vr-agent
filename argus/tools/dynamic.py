@@ -37,6 +37,20 @@ from pathlib import Path
 import config
 from .base import Tool, cap
 
+# Instrumentation lock — procmon is a single-instance global tool (launching a
+# second instance steals the first's capture, and `procmon /Terminate` kills
+# EVERYONE's capture). When detonations run in parallel (ARGUS_PARALLEL>1 on the
+# guest), only the procmon+tshark start/stop is serialized behind this lock so
+# concurrent runs don't corrupt each other's telemetry; the slow registry/fs
+# snapshot and analysis stages still run fully parallel.
+_INSTRUMENT_LOCK = __import__("threading").RLock()
+
+# Fast mode (ARGUS_FAST=1): skip procmon + tshark + full registry/fs snapshots
+# entirely and rely on static signals + packer + YARA + a light process-tree
+# diff. This is the throughput path — use it for high-volume batch collection
+# where per-sample depth is secondary to sheer sample count.
+_FAST_MODE = os.environ.get("ARGUS_FAST", "").strip().lower() in ("1", "true", "yes")
+
 _DYNAMIC_DIR = config.RUNS_DIR / "dynamic"
 _DYNAMIC_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -175,38 +189,52 @@ def _procmon_exe() -> str | None:
 def _start_procmon_capture(out_dir: Path) -> dict:
     """Start Process Monitor capture. The backing file is written to LOCAL disk —
     procmon corrupts a .pml if it captures directly to a network/shared folder
-    (ARGUS_RUNS on a VMware share). The finished file is copied to out_dir on stop."""
-    local_pml = _local_capture_dir() / "procmon.pml"
-    try:
-        local_pml.unlink(missing_ok=True)  # drop any stale capture
-    except OSError:
-        pass
-    exe = _procmon_exe()
-    if not exe:
-        # Surface it loudly instead of silently producing an INCONCLUSIVE verdict.
-        return {"pid": None, "log_local": str(local_pml),
-                "log": str(out_dir / "procmon.pml"), "command": None,
-                "error": "procmon not found — add Sysinternals to PATH or set "
-                         "ARGUS_PROCMON to the full Procmon.exe path"}
-    cmd = f'"{exe}" /BackingFile "{local_pml}" /Quiet /AcceptEula /Minimized'
-    proc = subprocess.Popen(cmd, shell=True)
-    time.sleep(3)  # give procmon time to start
-    return {"pid": proc.pid, "log_local": str(local_pml), "exe": exe,
-            "log": str(out_dir / "procmon.pml"), "command": cmd}
+    (ARGUS_RUNS on a VMware share). The finished file is copied to out_dir on stop.
+
+    Fast mode (ARGUS_FAST=1): skipped — returns a disabled handle so parallel
+    detonations never fight over the single-instance procmon.
+    """
+    if _FAST_MODE:
+        return {"pid": None, "log_local": "", "log": str(out_dir / "procmon.pml"),
+                "command": None, "skipped": True, "error": "skipped (ARGUS_FAST=1)"}
+    with _INSTRUMENT_LOCK:
+        local_pml = _local_capture_dir() / "procmon.pml"
+        try:
+            local_pml.unlink(missing_ok=True)  # drop any stale capture
+        except OSError:
+            pass
+        exe = _procmon_exe()
+        if not exe:
+            # Surface it loudly instead of silently producing an INCONCLUSIVE verdict.
+            return {"pid": None, "log_local": str(local_pml),
+                    "log": str(out_dir / "procmon.pml"), "command": None,
+                    "error": "procmon not found — add Sysinternals to PATH or set "
+                             "ARGUS_PROCMON to the full Procmon.exe path"}
+        cmd = f'"{exe}" /BackingFile "{local_pml}" /Quiet /AcceptEula /Minimized'
+        proc = subprocess.Popen(cmd, shell=True)
+        time.sleep(3)  # give procmon time to start
+        return {"pid": proc.pid, "log_local": str(local_pml), "exe": exe,
+                "log": str(out_dir / "procmon.pml"), "command": cmd}
 
 
 def _stop_procmon_capture(handle: dict | None = None) -> str:
     """Stop Process Monitor and copy the (now-closed) local .pml into out_dir.
-    A one-time copy to a share is safe; only live capture to a share corrupts."""
-    _safe_exec("procmon /Terminate", timeout=10)
-    time.sleep(2)
-    if handle and handle.get("log_local") and handle.get("log"):
-        try:
-            src = Path(handle["log_local"])
-            if src.exists() and src.stat().st_size > 0:
-                shutil.copy2(src, handle["log"])
-        except Exception:
-            pass
+    A one-time copy to a share is safe; only live capture to a share corrupts.
+
+    Fast mode: no-op. Locked so a parallel run doesn't /Terminate another's capture.
+    """
+    if handle and handle.get("skipped"):
+        return "procmon skipped (fast mode)"
+    with _INSTRUMENT_LOCK:
+        _safe_exec("procmon /Terminate", timeout=10)
+        time.sleep(1)
+        if handle and handle.get("log_local") and handle.get("log"):
+            try:
+                src = Path(handle["log_local"])
+                if src.exists() and src.stat().st_size > 0:
+                    shutil.copy2(src, handle["log"])
+            except Exception:
+                pass
     return "procmon terminated"
 
 
@@ -254,27 +282,35 @@ def _pick_capture_iface() -> str:
 
 
 def _start_network_capture(out_dir: Path, iface: str = "1") -> subprocess.Popen | None:
-    """Start tshark capture on `iface`. Returns the process or None if unavailable."""
-    pcap = out_dir / "network.pcap"
-    cmds = [
-        f'tshark -i {iface} -w "{pcap}" -q',
-        f'tshark -w "{pcap}" -q',   # fallback: let tshark pick its own default
-    ]
-    for cmd in cmds:
-        try:
-            proc = subprocess.Popen(cmd, shell=True)
-            time.sleep(2)
-            return proc
-        except Exception:
-            continue
-    return None
+    """Start tshark capture on `iface`. Returns the process or None if unavailable.
+    Fast mode (ARGUS_FAST=1): skipped (no NIC competition between parallel runs)."""
+    if _FAST_MODE:
+        return None
+    with _INSTRUMENT_LOCK:
+        pcap = out_dir / "network.pcap"
+        cmds = [
+            f'tshark -i {iface} -w "{pcap}" -q',
+            f'tshark -w "{pcap}" -q',   # fallback: let tshark pick its own default
+        ]
+        for cmd in cmds:
+            try:
+                proc = subprocess.Popen(cmd, shell=True)
+                time.sleep(2)
+                return proc
+            except Exception:
+                continue
+        return None
 
 
 def _stop_network_capture(proc: subprocess.Popen | None) -> str:
     if proc is None:
         return "no network capture active"
-    proc.terminate()
-    time.sleep(2)
+    with _INSTRUMENT_LOCK:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        time.sleep(1)
     return "network capture stopped"
 
 
@@ -904,12 +940,15 @@ def run_detonation(sample, timeout: int = _MAX_EXECUTION_SECONDS, on_progress=No
         emit(f"  YARA: matched {len(static['yara'])} rule(s): {', '.join(static['yara'][:6])}")
 
     # Stage 2: Baseline snapshots (slow: reg query /s + dir /s /b)
-    emit("[2/6] Baseline snapshots (registry + filesystem — this can take 30-60s)...")
-    _registry_snapshot("before", out_dir)
-    _filesystem_snapshot("before", out_dir, _snapshot_dirs())
-    proc_before = _process_tree_snapshot()
-    (out_dir / "processes_before.txt").write_text(proc_before, encoding="utf-8")
-    emit("  registry + filesystem + process snapshots captured")
+    if _FAST_MODE:
+        emit("[2/6] FAST MODE — skipping heavy registry/filesystem snapshots")
+    else:
+        emit("[2/6] Baseline snapshots (registry + filesystem — this can take 30-60s)...")
+        _registry_snapshot("before", out_dir)
+        _filesystem_snapshot("before", out_dir, _snapshot_dirs())
+        proc_before = _process_tree_snapshot()
+        (out_dir / "processes_before.txt").write_text(proc_before, encoding="utf-8")
+        emit("  registry + filesystem + process snapshots captured")
 
     # Stage 3: Start monitoring
     emit("[3/6] Starting monitoring probes...")
@@ -959,11 +998,15 @@ def run_detonation(sample, timeout: int = _MAX_EXECUTION_SECONDS, on_progress=No
     time.sleep(3)
 
     # Stage 6: After-snapshots + AUTOMATIC analysis (diffs + procmon + verdict)
-    emit("[6/6] After-snapshots + analyzing (diffing registry/fs, parsing procmon)...")
-    _registry_snapshot("after", out_dir)
-    _filesystem_snapshot("after", out_dir, _snapshot_dirs()[:3])
-    proc_after = _process_tree_snapshot()
-    (out_dir / "processes_after.txt").write_text(proc_after, encoding="utf-8")
+    emit("[6/6] " + ("Analyzing (fast mode)" if _FAST_MODE else "After-snapshots + analyzing (diffing registry/fs, parsing procmon)..."))
+    if not _FAST_MODE:
+        _registry_snapshot("after", out_dir)
+        _filesystem_snapshot("after", out_dir, _snapshot_dirs()[:3])
+        proc_after = _process_tree_snapshot()
+        (out_dir / "processes_after.txt").write_text(proc_after, encoding="utf-8")
+    else:
+        proc_after = _process_tree_snapshot()
+        (out_dir / "processes_after.txt").write_text(proc_after, encoding="utf-8")
 
     struct = analyze_detonation(out_dir, static, exec_result)
     findings = _format_findings(struct)
