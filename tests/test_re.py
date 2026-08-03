@@ -98,6 +98,68 @@ def test_hexdump_and_strings():
     assert any(".text" in s["text"] for s in sess.strings(minlen=4))
 
 
+def _tiny_pe32_with_import() -> bytes:
+    """Minimal 32-bit (PE32) exe with a real import from KERNEL32.dll.
+
+    Layout: DOS stub | PE | 1 code section (.text @RVA 0x1000/raw 0x200) and
+    the import table placed inside the .data section so we can point the
+    Import Directory at it. Thunks are 4-byte on PE32 — this is exactly the
+    case the old parser misread (it always walked 8-byte thunks).
+    """
+    import struct as _st
+    data = bytearray(0x800)
+    data[0:2] = b"MZ"
+    _st.pack_into("<I", data, 0x3C, 0x80)
+    off = 0x80
+    data[off:off + 4] = b"PE\x00\x00"
+    coff = off + 4
+    # machine x86, 1 section, timestamp 0, opt size 0xE0, chars
+    _st.pack_into("<HHIIIHH", data, coff, 0x14C, 1, 0, 0, 0, 0xE0, 0x22)
+    opt = coff + 20
+    _st.pack_into("<H", data, opt, 0x10B)           # PE32
+    _st.pack_into("<I", data, opt + 16, 0x1000)     # entry rva
+    _st.pack_into("<I", data, opt + 24, 0x400000)   # image base
+    # data directory [1] = import table @ RVA 0x2000
+    _st.pack_into("<I", data, opt + 96 + 8, 0x2000)
+
+    # .data section: rva 0x2000 -> raw 0x400, spanning 0x200 bytes (covers the
+    # whole import table structure below with consistent RVA/raw mapping).
+    sec = opt + 0xE0
+    data[sec:sec + 8] = b".data\x00\x00\x00"
+    _st.pack_into("<IIIII", data, sec + 8, 0x200, 0x2000, 0x200, 0x400, 0x60000040)
+    # raw off X maps to rva 0x2000 + (X - 0x400)
+
+    # --- build the import table inside .data (all RVAs map inside the section) ---
+    desc = 0x400   # rva 0x2000
+    ilt  = 0x430   # rva 0x2030
+    dlln = 0x450   # rva 0x2050
+    hint = 0x470   # rva 0x2070
+    _st.pack_into("<I", data, desc + 0, 0x2030)   # OriginalFirstThunk -> ILT
+    _st.pack_into("<I", data, desc + 4, 0)        # TimeDateStamp
+    _st.pack_into("<I", data, desc + 8, 0)        # ForwarderChain
+    _st.pack_into("<I", data, desc + 12, 0x2050)  # Name -> "KERNEL32.dll"
+    _st.pack_into("<I", data, desc + 16, 0x2030)  # FirstThunk -> IAT
+    _st.pack_into("<I", data, desc + 20, 0)       # null terminator descriptor
+
+    data[ilt:ilt + 4] = _st.pack("<I", 0x2070)    # ILT[0] -> hint/name
+    data[ilt + 4:ilt + 8] = _st.pack("<I", 0)     # ILT[1] = end
+    data[dlln:dlln + 12] = b"KERNEL32.dll\x00"
+    data[hint:hint + 2] = _st.pack("<H", 0x0100)  # hint
+    data[hint + 2:hint + 13] = b"MessageBoxA\x00"
+    return bytes(data)
+
+
+def test_pe32_import_thunk_width():
+    """Regression: 32-bit PE import thunks are 4 bytes, not 8."""
+    raw = _tiny_pe32_with_import()
+    b = C.parse(raw)
+    assert b is not None, "parser should accept the hand-built PE32"
+    assert b["arch"] == "x86" and b["bits"] == 32
+    names = [(i["lib"], i["name"]) for i in b.get("imports", [])]
+    assert any(lib == "KERNEL32.dll" for lib, _ in names), f"expected KERNEL32.dll import, got {names}"
+    assert any(n == "MessageBoxA" for _, n in names), f"expected MessageBoxA, got {names}"
+
+
 def test_pseudo_no_capstone_shape():
     # decompile of empty rows returns an empty-but-valid structure
     out = P.decompile([], "FUN_0", "x64")

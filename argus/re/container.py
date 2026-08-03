@@ -90,7 +90,7 @@ def parse_pe(data: bytes) -> dict | None:
 
         dd = opt + (112 if is_plus else 96)
         imports = _pe_imports(data, struct.unpack_from("<I", data, dd + 8)[0],
-                              sections, image_base)
+                              sections, image_base, is_plus)
         exports = _pe_exports(data, struct.unpack_from("<I", data, dd)[0],
                               sections, image_base)
 
@@ -116,14 +116,19 @@ def _pe_rva_to_off(rva: int, sections: list[dict]) -> int | None:
     return None
 
 
-def _pe_imports(data: bytes, imp_rva: int, sections: list[dict], base: int) -> list[dict]:
+def _pe_imports(data: bytes, imp_rva: int, sections: list[dict], base: int,
+                is_plus: bool = False) -> list[dict]:
+    """Parse the PE import table. Thunk width is decided by the PE architecture:
+    PE32 (is_plus=False) uses 4-byte thunks, PE32+ (is_plus=True) uses 8-byte.
+    Previously this always used 8-byte thunks, so 32-bit PE imports were garbage."""
     out: list[dict] = []
     if not imp_rva:
         return out
     off = _pe_rva_to_off(imp_rva, sections)
     if off is None:
         return out
-    is64 = any(s for s in sections)  # thunk width decided per-arch below by caller? keep 32/64 agnostic
+    width, fmt = (8, "<Q") if is_plus else (4, "<I")
+    hi = (1 << 63) if is_plus else (1 << 31)
     for i in range(512):
         d = off + i * 20
         if d + 20 > len(data):
@@ -143,13 +148,10 @@ def _pe_imports(data: bytes, imp_rva: int, sections: list[dict], base: int) -> l
             out.append({"lib": lib, "name": "*"})
             continue
         for j in range(2048):
-            # try 64-bit thunks first, fall back to 32-bit
-            for width, fmt, hi in ((8, "<Q", 1 << 63), (4, "<I", 1 << 31)):
-                if toff + j * width + width > len(data):
-                    thunk = 0
-                    break
-                thunk = struct.unpack_from(fmt, data, toff + j * width)[0]
+            if toff + j * width + width > len(data):
+                thunk = 0
                 break
+            thunk = struct.unpack_from(fmt, data, toff + j * width)[0]
             if not thunk:
                 break
             if thunk & hi:
