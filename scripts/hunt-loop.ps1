@@ -37,7 +37,7 @@ param(
     [string]$ArgusRuns  = "Z:\argus-results\runs",      # (legacy/unused - results now copied out)
     [string]$HostRunsDir= "C:\argus-results\runs",      # host dir the web Autopilot reads
     [int]$BootWaitSec   = 45,                            # seconds to let the guest + Tools come up
-    [int]$DetonateTimeout = 75,                          # per-sample detonation window (was 120 default; most loaders/RATs show their hand well inside 75s)
+    [int]$DetonateTimeout = 60,                          # per-sample detonation window; commodity stealers/loaders reveal C2+drops well inside 60s (raise if you hunt gated/beaconing families)
     [string]$Vmrun      = "",                            # auto-detected if blank
     [string]$VmPassword = ""                             # VM ENCRYPTION password (if the VM is encrypted)
 )
@@ -91,8 +91,10 @@ $samples = Get-ChildItem -Path $SampleDir -Filter *.zip -File
 if (-not $samples) { Write-Host "No .zip samples in $SampleDir"; exit 1 }
 Write-Host "== ARGUS hunt-loop: $($samples.Count) sample(s) ==" -ForegroundColor Cyan
 
+$batchStart = Get-Date
 foreach ($s in $samples) {
     Write-Host "`n--- $($s.Name) ---" -ForegroundColor Yellow
+    $t0 = Get-Date; $tReady = $t0; $tDeton = $t0
     try {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
@@ -111,6 +113,7 @@ foreach ($s in $samples) {
             }
         }
         Write-Host "  desktop ready"
+        $tReady = Get-Date
 
         $guestZip = Join-Path $GuestIntake $s.Name
         Write-Host "  copy sample into guest intake"
@@ -134,6 +137,7 @@ foreach ($s in $samples) {
                  "Remove-Item '$gzip' -EA SilentlyContinue; " +
                  "if (Test-Path '$guestRuns\review_queue') { Compress-Archive -Path '$guestRuns\review_queue\*' -DestinationPath '$gzip' -Force -EA SilentlyContinue }; exit 0"
         & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$psCmd)) 2>&1 | Out-Null
+        $tDeton = Get-Date
         # bring back the diagnostic log + the drafts package
         $hostLog = Join-Path $env:TEMP "argus-autohunt-guest.log"
         & $VMRUN @($auth + @("copyFileFromGuestToHost",$Vmx,$glog,$hostLog)) 2>&1 | Out-Null
@@ -154,6 +158,13 @@ foreach ($s in $samples) {
     catch {
         Write-Host "  ! $($s.Name): $($_.Exception.Message)" -ForegroundColor Red
     }
+    # per-stage timing so we can SEE the bottleneck (revert+resume vs detonate vs copy-out)
+    $now = Get-Date
+    $rdy = [int]($tReady - $t0).TotalSeconds
+    $det = [int]($tDeton - $tReady).TotalSeconds
+    $cpy = [int]($now - $tDeton).TotalSeconds
+    $tot = [int]($now - $t0).TotalSeconds
+    Write-Host ("  [timing] revert+resume ${rdy}s | detonate ${det}s | copyout ${cpy}s | TOTAL ${tot}s") -ForegroundColor DarkCyan
     # NOTE: no per-sample cleanup revert here. Each iteration reverts at the TOP
     # (line ~98) before it touches anything, so the NEXT sample already starts from
     # the clean snapshot regardless of how this one ended — the isolation guarantee
@@ -165,5 +176,7 @@ foreach ($s in $samples) {
 # after reverting orphans the current-state delta disk and corrupts the chain.
 # A single revert here wipes the last sample's malware; the next run reverts again.
 VMquiet ($base + @("revertToSnapshot",$Vmx,$Snapshot))
-Write-Host "`n== hunt-loop complete. Drafts copied to $HostRunsDir ==" -ForegroundColor Cyan
+$batchSecs = [int]((Get-Date) - $batchStart).TotalSeconds
+$perSample = if ($samples.Count) { [int]($batchSecs / $samples.Count) } else { 0 }
+Write-Host "`n== hunt-loop complete: $($samples.Count) sample(s) in ${batchSecs}s (~${perSample}s each). Drafts -> $HostRunsDir ==" -ForegroundColor Cyan
 Write-Host "Review/publish on the host: http://127.0.0.1:8765/panel"
