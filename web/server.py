@@ -219,6 +219,11 @@ class Handler(BaseHTTPRequestHandler):
             if config.WEB_TOKEN and qs.get("token", [""])[0]:
                 cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
             return self._send_file(STATIC / "re.html", "text/html; charset=utf-8", cookie=cookie)
+        if route == "/pipeline" or route == "/ops":
+            cookie = None
+            if config.WEB_TOKEN and qs.get("token", [""])[0]:
+                cookie = f"argus_token={config.WEB_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
+            return self._send_file(STATIC / "pipeline.html", "text/html; charset=utf-8", cookie=cookie)
         if route.startswith("/api/re/"):
             return self._re_get(route, qs)
         if route == "/api/publish/drafts":
@@ -241,6 +246,8 @@ class Handler(BaseHTTPRequestHandler):
             from argus import jobs
             j = jobs.get(qs.get("id", [""])[0])
             return self._json(j or {"error": "no such job"}, 200 if j else 404)
+        if route == "/api/pipeline":
+            return self._pipeline()
         if route == "/api/runs":
             return self._runs()
         if route == "/api/run":
@@ -446,6 +453,73 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"messages": msgs})
         except Exception as e:
             self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+
+    def _pipeline(self):
+        """Aggregate command-center status for the whole collection→publish pipeline."""
+        out = {"ok": True, "errors": {}}
+
+        # Intake: samples in the queue
+        try:
+            qdir = config.INTAKE_DIR
+            if qdir.exists():
+                out["intake"] = {
+                    "dir": str(qdir),
+                    "samples": [f.name for f in qdir.iterdir() if f.is_file() and f.suffix.lower() == ".zip"],
+                }
+            else:
+                out["intake"] = {"dir": str(qdir), "samples": []}
+        except Exception as e:
+            out["intake"] = {"samples": []}
+            out["errors"]["intake"] = str(e)
+
+        # Detonation history (seen ledger shape -> verdict counts)
+        try:
+            from argus import autohunt
+            seen = autohunt._load_seen()
+            verdicts = {}
+            for sha, rec in seen.items():
+                v = rec.get("verdict", "unknown")
+                verdicts[v] = verdicts.get(v, 0) + 1
+            pending = autohunt.pending_reviews()
+            out["detonation"] = {
+                "seen_total": len(seen),
+                "verdicts": verdicts,
+                "statuses": {},
+            }
+            out["reviews"] = {
+                "pending": len(pending),
+                "items": [{"dir": p["dir"], "status": p["status"], "tweet": p["tweet"][:120]} for p in pending[:50]],
+            }
+        except Exception as e:
+            out["detonation"] = {"seen_total": 0, "verdicts": {}}
+            out["reviews"] = {"pending": 0, "items": []}
+            out["errors"]["detonation"] = str(e)
+
+        # Publish + autopilot
+        try:
+            from argus import autopublish, publish
+            out["autopilot"] = autopublish.status()
+            try:
+                out["publish_batch"] = publish.batch_status()
+            except Exception:
+                out["publish_batch"] = {}
+        except Exception as e:
+            out["autopilot"] = {"running": False}
+            out["errors"]["autopilot"] = str(e)
+
+        # Jobs
+        try:
+            from argus import jobs
+            out["jobs"] = {
+                "types": jobs.job_types(),
+                "active": [j for j in jobs.list_jobs() if j.get("status") in ("queued", "running")],
+                "recent": jobs.list_jobs(limit=10),
+            }
+        except Exception as e:
+            out["jobs"] = {"types": [], "active": [], "recent": []}
+            out["errors"]["jobs"] = str(e)
+
+        self._json(out)
 
     def _retrieve(self, payload):
         q = (payload.get("query") or "").strip()
