@@ -118,19 +118,37 @@ if (-not $verified) {
 Write-Host "  new code verified in guest" -ForegroundColor Green
 
 # --- 3b. Optional: bake 7-Zip into the guest for .rar/.7z droppers --------------
+# BEST-EFFORT: a 7z copy failure must NOT sink the (verified) code update — we warn
+# and press on to the snapshot. Target C:\Users\Public\argus-tools, which the
+# automation user can always write (C:\Tools may carry an admin-only ACL -> the
+# 'access rights to this file' error). _extract_with_7z searches this path.
 if ($With7z) {
-    Write-Host "  installing 7-Zip into guest C:\Tools (for .rar/.7z samples)"
+    $guestToolDir = "C:\Users\Public\argus-tools"
+    Write-Host "  installing 7-Zip into guest $guestToolDir (for .rar/.7z samples)"
     $hzExe = @("C:\Program Files\7-Zip\7z.exe","C:\Program Files (x86)\7-Zip\7z.exe") |
              Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $hzExe) { throw "-With7z: no 7z.exe on the host — install 7-Zip (https://www.7-zip.org) first" }
-    $hzDll = Join-Path (Split-Path $hzExe) "7z.dll"
-    if (-not (Test-Path $hzDll)) { throw "-With7z: 7z.dll missing next to $hzExe (needed for the codecs)" }
-    # create C:\Tools in the guest, then copy BOTH files (7z.exe can't run without 7z.dll)
-    $mk = "New-Item -ItemType Directory -Force 'C:\Tools' | Out-Null; exit 0"
-    & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$mk)) 2>&1 | Out-Null
-    VM ($auth + @("copyFileFromHostToGuest",$Vmx,$hzExe,"C:\Tools\7z.exe")) | Out-Null
-    VM ($auth + @("copyFileFromHostToGuest",$Vmx,$hzDll,"C:\Tools\7z.dll")) | Out-Null
-    Write-Host "    copied 7z.exe + 7z.dll -> C:\Tools" -ForegroundColor Green
+    $hzDll = if ($hzExe) { Join-Path (Split-Path $hzExe) "7z.dll" } else { $null }
+    if (-not $hzExe -or -not (Test-Path $hzDll)) {
+        Write-Host "    ! 7-Zip not found on host — skipping (.rar stays unsupported; zip/nested-zip/.js still work)" -ForegroundColor DarkYellow
+    } else {
+        # stage to a plain user-owned temp dir first: vmrun can't always read the
+        # Program Files copy directly ('access rights to this file').
+        $stage7 = Join-Path $env:TEMP "argus-7z"
+        New-Item -ItemType Directory -Force $stage7 | Out-Null
+        Copy-Item $hzExe (Join-Path $stage7 "7z.exe") -Force
+        Copy-Item $hzDll (Join-Path $stage7 "7z.dll") -Force
+        $mk = "New-Item -ItemType Directory -Force '$guestToolDir' | Out-Null; exit 0"
+        & $VMRUN @($auth + @("runProgramInGuest",$Vmx,$gps,"-NoProfile","-ExecutionPolicy","Bypass","-Command",$mk)) 2>&1 | Out-Null
+        & $VMRUN @($auth + @("copyFileFromHostToGuest",$Vmx,(Join-Path $stage7 "7z.exe"),"$guestToolDir\7z.exe")) 2>&1 | Out-Null
+        $exeOk = $LASTEXITCODE -eq 0
+        & $VMRUN @($auth + @("copyFileFromHostToGuest",$Vmx,(Join-Path $stage7 "7z.dll"),"$guestToolDir\7z.dll")) 2>&1 | Out-Null
+        $dllOk = $LASTEXITCODE -eq 0
+        if ($exeOk -and $dllOk) {
+            Write-Host "    copied 7z.exe + 7z.dll -> $guestToolDir" -ForegroundColor Green
+        } else {
+            Write-Host "    ! 7-Zip copy failed (exe=$exeOk dll=$dllOk) — continuing WITHOUT .rar; code+baseline still saved" -ForegroundColor DarkYellow
+        }
+    }
 }
 
 # --- 4. Bring the guest to the snapshot power state (never a hard stop) ---------

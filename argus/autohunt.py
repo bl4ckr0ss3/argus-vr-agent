@@ -134,7 +134,9 @@ def _extract_with_7z(p: Path) -> list[Path]:
     Tries the known sample passwords. Never raises; [] when 7z isn't installed."""
     import shutil
     import subprocess
-    exe = next((c for c in ("7z", "7za", r"C:\Tools\7z.exe", r"C:\Tools\7za.exe",
+    exe = next((c for c in ("7z", "7za",
+                            r"C:\Users\Public\argus-tools\7z.exe",   # writable by the automation user
+                            r"C:\Tools\7z.exe", r"C:\Tools\7za.exe",
                             r"C:\Program Files\7-Zip\7z.exe")
                 if shutil.which(c) or Path(c).exists()), None)
     if not exe:
