@@ -94,10 +94,11 @@ Write-Host "== ARGUS hunt-loop: $($samples.Count) sample(s) ==" -ForegroundColor
 $batchStart = Get-Date
 foreach ($s in $samples) {
     Write-Host "`n--- $($s.Name) ---" -ForegroundColor Yellow
-    $t0 = Get-Date; $tReady = $t0; $tDeton = $t0
+    $t0 = Get-Date; $tReverted = $t0; $tReady = $t0; $tDeton = $t0
     try {
         Write-Host "  revert -> $Snapshot"
         VM ($base + @("revertToSnapshot",$Vmx,$Snapshot)) | Out-Null
+        $tReverted = Get-Date
         Write-Host "  start (headless)"
         # Wait-Desktop resumes/boots as needed: a SUSPENDED baseline comes back to a
         # live desktop in seconds (explorer already running); a powered-off baseline
@@ -160,11 +161,12 @@ foreach ($s in $samples) {
     }
     # per-stage timing so we can SEE the bottleneck (revert+resume vs detonate vs copy-out)
     $now = Get-Date
-    $rdy = [int]($tReady - $t0).TotalSeconds
+    $rev = [int]($tReverted - $t0).TotalSeconds
+    $res = [int]($tReady - $tReverted).TotalSeconds
     $det = [int]($tDeton - $tReady).TotalSeconds
     $cpy = [int]($now - $tDeton).TotalSeconds
     $tot = [int]($now - $t0).TotalSeconds
-    Write-Host ("  [timing] revert+resume ${rdy}s | detonate ${det}s | copyout ${cpy}s | TOTAL ${tot}s") -ForegroundColor DarkCyan
+    Write-Host ("  [timing] revert ${rev}s | resume-wait ${res}s | detonate ${det}s | copyout ${cpy}s | TOTAL ${tot}s") -ForegroundColor DarkCyan
     # NOTE: no per-sample cleanup revert here. Each iteration reverts at the TOP
     # (line ~98) before it touches anything, so the NEXT sample already starts from
     # the clean snapshot regardless of how this one ended — the isolation guarantee
