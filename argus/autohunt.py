@@ -356,8 +356,12 @@ def loop(queue_dir: Path | None = None, timeout: int = 120,
 
     while True:
         seen = _load_seen()
-        samples = [s for s in _iter_queue(queue_dir)
-                   if not (s in seen or _sha256(s) in seen)]
+        def _fresh(s):
+            try:
+                return _sha256(s) not in seen  # unreadable/vanished -> skip, don't crash the drain
+            except OSError:
+                return False
+        samples = [s for s in _iter_queue(queue_dir) if _fresh(s)]
         if not samples:
             if once:
                 ev("loop_end", processed=0)

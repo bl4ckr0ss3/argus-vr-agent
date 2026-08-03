@@ -95,7 +95,12 @@ while ($true) {
     Write-Host "  accumulating $BatchSize samples across multiple families..."
     $accumulated = 0
     $accumulatedTags = @()
-    while ($accumulated -lt $BatchSize) {
+    $fetchTries = 0
+    # Cap the accumulation loop: if families are embargoed/empty or MB is down,
+    # this would otherwise spin forever. Stop after enough tries and detonate
+    # whatever we managed to pull.
+    while ($accumulated -lt $BatchSize -and $fetchTries -lt 8) {
+        $fetchTries++
         $tag = $Tags | Get-Random
         $remaining = $BatchSize - $accumulated
         $batchLimit = [Math]::Min($remaining, 5)  # 5 per family per round

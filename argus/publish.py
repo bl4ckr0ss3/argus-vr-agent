@@ -146,8 +146,9 @@ def _days_since(iso_date: str) -> int:
 def safety_reason(struct: dict) -> str | None:
     """Why this finding must NOT be auto-published (None = clear to publish).
 
-    Freshness-aware: a 0/70 VT result on a young sample is NOT a safety block —
-    it's likely undetected malware. Only stale 0/70 samples are blocked.
+    A 0/70 VT result blocks AUTO-publish by default. Set ARGUS_PUBLISH_UNDETECTED=1
+    to let ARGUS auto-publish a *fresh* (<30d) 0/70 as likely-undetected malware;
+    even then the human can always push a blocked finding manually from the panel.
     """
     vt = struct.get("vt") or {}
     conflict = (struct.get("vt_conflict") or "").lower()
@@ -156,15 +157,17 @@ def safety_reason(struct: dict) -> str | None:
 
     if vt.get("found") and vt.get("total", 0) >= 20 and vt.get("malicious", 0) == 0:
         first_seen = vt.get("first_seen") or ""
-        age_days = _days_since(first_seen) if first_seen else 999
-        if age_days < 7:
+        age_days = _days_since(first_seen) if first_seen else None
+        age_txt = f" (sample is {age_days}d old)" if age_days is not None else ""
+        # A 0/70 on a brand-new sample IS plausibly undetected malware — but
+        # auto-voting "malicious" on VT when VT itself shows it clean is exactly
+        # where a false positive burns our reputation publicly. So this bypass is
+        # OPT-IN (ARGUS_PUBLISH_UNDETECTED=1); otherwise a 0/70 stays blocked for
+        # AUTO-publish and the human can still push it manually from the panel.
+        if os.environ.get("ARGUS_PUBLISH_UNDETECTED", "").strip() == "1" and age_days is not None and age_days < 30:
             struct["vt_note"] = f"undetected (0/{vt['total']}) — fresh sample ({age_days}d old)"
-            return None  # fresh malware, AV hasn't caught up yet
-        elif age_days < 30:
-            struct["vt_note"] = f"undetected (0/{vt['total']}) — moderate age ({age_days}d)"
-            return None  # allow with caution flag
-        else:
-            return f"VirusTotal shows 0/{vt['total']} detections (sample is {age_days}d old)"
+            return None
+        return f"VirusTotal shows 0/{vt['total']} detections{age_txt}"
 
     if struct.get("verdict") != "suspicious":
         return f"verdict is '{struct.get('verdict')}', not a malware finding"

@@ -33,7 +33,7 @@ def lookup(sha256: str) -> dict:
     """
     out = {"found": False, "malicious": 0, "suspicious": 0, "harmless": 0,
            "undetected": 0, "total": 0, "reputation": 0, "names": [],
-           "threat_label": "", "summary": "", "error": None}
+           "threat_label": "", "first_seen": "", "summary": "", "error": None}
     key = (config.VT_API_KEY or "").strip()
     if not key:
         out["error"] = "no VT_API_KEY set"
@@ -71,6 +71,17 @@ def lookup(sha256: str) -> dict:
     out["names"] = names[:5]
     ptc = attr.get("popular_threat_classification") or {}
     out["threat_label"] = ptc.get("suggested_threat_label", "") or ""
+    # first_submission_date is a Unix epoch; expose it as an ISO date so callers
+    # can reason about sample freshness (a 0/70 on a brand-new sample is likely
+    # undetected malware, not a false positive). Without this the freshness gates
+    # in autohunt/publish always saw "age 999" and never fired.
+    fsd = attr.get("first_submission_date")
+    if fsd:
+        try:
+            from datetime import datetime, timezone
+            out["first_seen"] = datetime.fromtimestamp(int(fsd), tz=timezone.utc).date().isoformat()
+        except Exception:
+            pass
     det = f"{out['malicious']}/{out['total']}" if out["total"] else "0/0"
     label = f" · {out['threat_label']}" if out["threat_label"] else ""
     out["summary"] = f"malicious {det}{label}"
