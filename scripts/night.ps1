@@ -45,7 +45,9 @@ Start-Process powershell -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass"
 Start-Sleep -Seconds 5   # let the server bind before the hunter starts feeding it
 
 Write-Host "  starting the autonomous hunter ..." -ForegroundColor DarkGray
-Start-Process powershell -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", "& '$here\autonomous.ps1' -Vmx '$Vmx' -VmPassword ''")
+# No -VmPassword: the VM is unencrypted, and vmrun harmlessly ignores the default
+# -vp on an unencrypted VM. (Passing -VmPassword '' mangled PowerShell arg parsing.)
+Start-Process powershell -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", "& '$here\autonomous.ps1' -Vmx '$Vmx'")
 
 Write-Host ""
 Write-Host "== ARGUS is running overnight. Sleep well. ==" -ForegroundColor Green
