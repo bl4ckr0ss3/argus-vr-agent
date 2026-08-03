@@ -108,7 +108,9 @@ def publish_finding(struct: dict, do_push: bool | None = None) -> dict:
     view = R.finding_view(struct)
     feed.insert(0, {"date": gen[:10], "generated": gen, "sample": view["sample"],
                     "sha256": sha, "verdict": view["verdict"],
-                    "confidence": view["confidence"], "file": fname})
+                    "confidence": view["confidence"], "file": fname,
+                    "family": view.get("family") or "unknown",
+                    "signals": view.get("signals") or []})
     feed.sort(key=lambda e: e.get("generated", ""), reverse=True)
     (fdir / "feed.json").write_text(json.dumps(feed, indent=2), encoding="utf-8")
     (fdir / "index.html").write_text(R.index_html(feed), encoding="utf-8")
@@ -128,3 +130,50 @@ def publish_finding(struct: dict, do_push: bool | None = None) -> dict:
     return {"ok": True, "url": url, "file": fname, "committed": committed,
             "pushed": pushed, "push_msg": push_msg[:300] if push_msg else "",
             "count": len(feed)}
+
+
+def rebuild_catalog(do_push: bool | None = None) -> dict:
+    """Regenerate the collection catalog (feed.json + index.html) for every finding
+    already published to the site, backfilling `family` from the MalwareBazaar
+    family map for older entries that predate family tracking. One commit + push —
+    no per-report rewrite. Use after adding the catalog, or to refresh attribution."""
+    c = _cfg()
+    if not (c["dir"] and c["dir"].is_dir()):
+        return {"ok": False, "error": "ARGUS_SITE_DIR is not set to a valid directory"}
+    fdir = c["dir"] / c["subdir"]
+    if not fdir.exists():
+        return {"ok": False, "error": f"no findings directory at {fdir}"}
+    feed = _load_feed(fdir)
+    if not feed:
+        return {"ok": False, "error": "feed is empty — publish some findings first"}
+    try:
+        from .intel import malwarebazaar as mb
+    except Exception:
+        mb = None
+    backfilled = 0
+    for e in feed:
+        if (not e.get("family")) or e.get("family") == "unknown":
+            fam = None
+            if mb and e.get("sha256"):
+                try:
+                    fam = mb.family_for(e["sha256"])
+                except Exception:
+                    fam = None
+            if fam:
+                e["family"] = fam
+                backfilled += 1
+            else:
+                e.setdefault("family", "unknown")
+        e.setdefault("signals", [])
+    (fdir / "feed.json").write_text(json.dumps(feed, indent=2), encoding="utf-8")
+    (fdir / "index.html").write_text(R.index_html(feed), encoding="utf-8")
+    _git(c["dir"], "add", c["subdir"])
+    code, msg = _git(c["dir"], "commit", "-m", f"Rebuild collection catalog ({len(feed)} samples)")
+    committed = code == 0 or "nothing to commit" in msg
+    pushed = None
+    want_push = c["push"] if do_push is None else do_push
+    if want_push:
+        pc, _ = _git(c["dir"], "push", *(["origin", c["branch"]] if c["branch"] else []), timeout=120)
+        pushed = pc == 0
+    return {"ok": True, "count": len(feed), "backfilled": backfilled,
+            "committed": committed, "pushed": pushed}

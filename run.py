@@ -169,6 +169,21 @@ def cmd_detonate(args) -> None:
                    on_progress=lambda line: print(line, flush=True))
 
 
+def cmd_catalog(args) -> None:
+    """Rebuild + publish the collection catalog (0xblack.dev index) from all findings."""
+    _try_dotenv()
+    from argus import site_publish
+    if not site_publish.site_configured():
+        print("Site not configured — set ARGUS_SITE_DIR (and ARGUS_SITE_URL) first.")
+        return
+    r = site_publish.rebuild_catalog(do_push=not args.no_push)
+    if not r.get("ok"):
+        print(f"catalog rebuild failed: {r.get('error')}")
+        return
+    print(f"Collection catalog rebuilt: {r['count']} samples "
+          f"({r['backfilled']} families backfilled) · committed={r['committed']} pushed={r['pushed']}")
+
+
 def cmd_cleanup(args) -> None:
     from argus.cleanup import clean
     dry = not args.apply
@@ -786,6 +801,10 @@ def main() -> None:
     pdyn.add_argument("sample")
     pdyn.add_argument("--timeout", type=int, default=120, help="max execution seconds")
     pdyn.set_defaults(func=cmd_detonate)
+
+    pcat = sub.add_parser("catalog", help="rebuild + publish the collection catalog (0xblack.dev)")
+    pcat.add_argument("--no-push", action="store_true", help="commit locally but don't git push")
+    pcat.set_defaults(func=cmd_catalog)
 
     pclean = sub.add_parser("cleanup", help="purge old run artifacts to save disk")
     pclean.add_argument("--days", type=int, default=config.RUNTIME_RETENTION_DAYS)

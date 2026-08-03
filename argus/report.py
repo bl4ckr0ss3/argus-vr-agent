@@ -252,40 +252,119 @@ function cpj(b){{var p=b.closest('.card').querySelector('.jsonioc');navigator.cl
 </div></body></html>"""
 
 
+_CATALOG_CSS = """
+.wrap{max-width:1040px}
+.hero h1{font-size:26px;margin:2px 0}
+.hero p{color:var(--dim);margin:2px 0 0;font-size:14px}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0 8px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 18px;min-width:104px}
+.stat b{display:block;font-size:26px;color:var(--amber);line-height:1.05;font-family:ui-monospace,Consolas,monospace}
+.stat span{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.7px}
+.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:18px 0 6px}
+#q{flex:1;min-width:220px;background:#0e1116;border:1px solid var(--line);border-radius:9px;color:var(--ink);padding:10px 14px;font:14px ui-monospace,Consolas,monospace}
+#q:focus{outline:none;border-color:var(--cyan)}
+#q::placeholder{color:var(--dim)}
+.showing{color:var(--dim);font-size:13px;white-space:nowrap}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin:6px 0 2px}
+.chip{background:#12151c;border:1px solid var(--line);color:var(--dim);border-radius:999px;padding:4px 12px;font:12.5px inherit;cursor:pointer;transition:.12s}
+.chip:hover{border-color:var(--cyan);color:var(--ink)}
+.chip.active{background:var(--amber);border-color:var(--amber);color:#0b0d12;font-weight:700}
+.chip s{text-decoration:none;opacity:.55;margin-left:4px}
+.fam{display:inline-block;background:#181c25;border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:12px;color:var(--purple);white-space:nowrap}
+td.c-conf,th.c-conf{text-align:right}
+tbody tr:hover{background:#151922}
+"""
+
+_CATALOG_JS = """
+(function(){
+  var q=document.getElementById('q');
+  var rows=[].slice.call(document.querySelectorAll('tbody tr[data-text]'));
+  var total=rows.length, fam='';
+  function apply(){
+    var s=(q.value||'').trim().toLowerCase(),shown=0;
+    rows.forEach(function(r){
+      var okT=!s||r.getAttribute('data-text').indexOf(s)>-1;
+      var okF=!fam||r.getAttribute('data-fam')===fam;
+      var show=okT&&okF; r.style.display=show?'':'none'; if(show)shown++;
+    });
+    document.getElementById('shown').textContent=shown;
+  }
+  q.addEventListener('input',apply);
+  [].slice.call(document.querySelectorAll('.chip')).forEach(function(c){
+    c.addEventListener('click',function(){
+      [].slice.call(document.querySelectorAll('.chip')).forEach(function(x){x.classList.remove('active')});
+      c.classList.add('active'); fam=c.getAttribute('data-fam'); apply();
+    });
+  });
+})();
+"""
+
+
 def index_html(entries: list[dict]) -> str:
+    """The collection catalog: a searchable, family-filterable archive of every
+    published finding (the public face of 0xblack.dev / ARGUS threat intel)."""
+    from collections import Counter
+    fam_counts = Counter((e.get("family") or "unknown") for e in entries)
+    n = len(entries)
+    n_fam = len([f for f in fam_counts if f and f != "unknown"])
+    latest = entries[0]["date"] if entries else "—"
+
+    chips = '<button class="chip active" data-fam="">all</button>'
+    for fam, cnt in fam_counts.most_common(28):
+        if not fam or fam == "unknown":
+            continue
+        chips += f'<button class="chip" data-fam="{_e(fam.lower())}">{_e(fam)}<s>{cnt}</s></button>'
+
     rows = ""
     for e in entries:
         label, color = _VERDICT_LABEL.get(e["verdict"], (e["verdict"].upper(), "#8b9bb4"))
-        rows += (f'<tr><td class="mono c-date">{_e(e["date"])}</td>'
-                 f'<td><a href="{_e(e["file"])}">{_e(e["sample"])}</a></td>'
+        fam = e.get("family") or "unknown"
+        sample = e.get("sample") or (e.get("sha256", "")[:16])
+        sha = e.get("sha256", "")
+        text = f'{sample} {sha} {fam} {e["verdict"]}'.lower()
+        rows += (f'<tr data-fam="{_e(fam.lower())}" data-text="{_e(text)}">'
+                 f'<td class="mono c-date">{_e(e["date"])}</td>'
+                 f'<td><span class="fam">{_e(fam)}</span></td>'
+                 f'<td><a href="{_e(e["file"])}">{_e(sample)}</a></td>'
                  f'<td class="c-verdict"><span class="badge" style="background:{color}22;color:{color}">{label}</span></td>'
-                 f'<td class="c-conf">{e["confidence"]}%</td>'
-                 f'<td class="c-sha">{_e(e["sha256"][:16])}…</td></tr>')
+                 f'<td class="c-conf">{e.get("confidence", 0)}%</td>'
+                 f'<td class="c-sha mono">{_e(sha[:16])}…</td></tr>')
+
     base = _site_base()
     feed_url = f"{base}/findings/" if base else ""
-    idesc = f"{len(entries)} malware findings · threat intelligence by ARGUS."
+    idesc = f"{n} malware samples across {n_fam} families — a live, detonated threat-intel archive by ARGUS."
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 {_FAVICON}
-<title>{SITE_TITLE}</title>
+<title>{SITE_TITLE} — Collection</title>
 <meta name="description" content="{_e(idesc)}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="0xblack.dev">
-<meta property="og:title" content="{SITE_TITLE}">
+<meta property="og:title" content="{SITE_TITLE} — Malware Collection">
 <meta property="og:description" content="{_e(idesc)}">
 <meta property="og:url" content="{_e(feed_url)}">
 <meta name="twitter:card" content="summary">
-<style>{_CSS}</style></head><body><div class="wrap">
+<style>{_CSS}{_CATALOG_CSS}</style></head><body><div class="wrap">
 <div class="top"><span class="brand">0x<span class="x">black</span>.dev</span>
 <span class="tag">{SITE_TAG}</span></div>
-<h1>Threat Intelligence Feed</h1>
-<div class="meta">{len(entries)} published finding(s) · <a href="feed.json">JSON feed</a></div>
+<div class="hero"><h1>Malware Collection</h1>
+<p>Live archive of detonated, analyzed samples · newest first · <a href="feed.json">JSON feed</a></p></div>
+<div class="stats">
+<div class="stat"><b>{n}</b><span>samples</span></div>
+<div class="stat"><b>{n_fam}</b><span>families</span></div>
+<div class="stat"><b>{_e(latest)}</b><span>latest</span></div>
+</div>
+<div class="tools">
+<input id="q" type="search" placeholder="search sample, sha256, family…" autocomplete="off">
+<span class="showing"><b id="shown">{n}</b> / {n} shown</span>
+</div>
+<div class="chips">{chips}</div>
 <div class="card"><div class="tablewrap"><table>
-<colgroup><col class="c-date"><col><col class="c-verdict"><col class="c-conf"><col class="c-sha"></colgroup>
-<thead><tr><th class="c-date">Date</th><th>Sample</th><th class="c-verdict">Verdict</th><th class="c-conf">Conf.</th><th class="c-sha">SHA-256</th></tr></thead>
-<tbody>{rows or '<tr><td colspan=5 style="color:var(--dim)">No findings yet.</td></tr>'}</tbody></table></div></div>
-<div class="foot">Generated by <b>ARGUS</b></div>
-</div></body></html>"""
+<colgroup><col class="c-date"><col class="c-fam"><col><col class="c-verdict"><col class="c-conf"><col class="c-sha"></colgroup>
+<thead><tr><th class="c-date">Date</th><th>Family</th><th>Sample</th><th class="c-verdict">Verdict</th><th class="c-conf">Conf.</th><th class="c-sha">SHA-256</th></tr></thead>
+<tbody>{rows or '<tr><td colspan=6 style="color:var(--dim)">No samples yet.</td></tr>'}</tbody></table></div></div>
+<div class="foot">Generated by <b>ARGUS</b> · autonomous malware detonation &amp; threat intel</div>
+</div><script>{_CATALOG_JS}</script></body></html>"""
 
 
 def now_utc() -> str:
