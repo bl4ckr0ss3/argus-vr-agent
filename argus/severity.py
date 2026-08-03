@@ -126,8 +126,14 @@ def classify_severity(title: str = "", cwe: str = "", hypothesis: str = "",
         if not passed:
             all_evidence_passed = False
 
-    # Stage 5: determine severity
-    if has_primitive and has_impact_keyword and all_evidence_passed and not flags:
+    # Stage 5: determine severity.
+    # A critical claim needs: a genuine primitive AND the structured evidence for
+    # every requirement (primitive/vector/scope/chain/mitigations) AND no overclaim
+    # flags. The rigid `has_impact_keyword` gate is intentionally NOT required here:
+    # the deployment_scope + exploit_chain evidence requirements already capture
+    # impact, and requiring a specific literal keyword (e.g. "100m+") wrongly
+    # downgraded genuine, fully-evidenced criticals.
+    if has_primitive and all_evidence_passed and not flags:
         severity = "critical"
         cvss = 9.0
         downgrade = ""
