@@ -125,11 +125,18 @@ while ($true) {
         Write-Host "  no samples this round (families embargoed/empty) - next round" -ForegroundColor DarkYellow
     } else {
         Write-Host "  detonating $($zips.Count) sample(s) through the VM in one batch..." -ForegroundColor Yellow
-        $hlArgs = @("-Vmx",$Vmx,"-Snapshot",$Snapshot,"-SampleDir",$BatchDir,
-                    "-GuestUser",$GuestUser,"-GuestPassword",$GuestPassword,
-                    "-VmPassword",$VmPassword,"-HostRunsDir",$HostRunsDir)
-        if ($Fast)   { $hlArgs += "-Fast" }
-        if ($Parallel -gt 1) { $hlArgs += @("-Parallel",$Parallel) }
+        # HASHTABLE splat (not an array): array splatting binds POSITIONALLY, so
+        # "-Vmx"/"-VmPassword"/... were treated as values and shifted onto the wrong
+        # params (e.g. -VmPassword landing on the [int]DetonateTimeout). A hashtable
+        # binds by name, which is what we want.
+        $hlArgs = @{
+            Vmx = $Vmx; Snapshot = $Snapshot; SampleDir = $BatchDir
+            GuestUser = $GuestUser; GuestPassword = $GuestPassword
+            HostRunsDir = $HostRunsDir
+        }
+        if ($VmPassword)     { $hlArgs.VmPassword = $VmPassword }
+        if ($Fast)           { $hlArgs.Fast = $true }
+        if ($Parallel -gt 1) { $hlArgs.Parallel = $Parallel }
         & $huntLoop @hlArgs
         Write-Host "  round $round done - $($zips.Count) samples processed, Autopilot will publish strong findings" -ForegroundColor Green
     }
