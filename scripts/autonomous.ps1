@@ -38,6 +38,8 @@ param(
     # copies the drafts here (the VMware shared folder isn't reliably reachable
     # from the runProgramInGuest session).
     [string]$HostRunsDir   = "C:\argus-results\runs",
+    [int]$Parallel         = 1,                       # guest-side parallel detonations (requires -Fast)
+    [switch]$Fast,                                    # ARGUS_FAST=1 for max throughput
     [string]$Vmrun         = ""
 )
 $ErrorActionPreference = "Stop"
@@ -123,9 +125,12 @@ while ($true) {
         Write-Host "  no samples this round (families embargoed/empty) - next round" -ForegroundColor DarkYellow
     } else {
         Write-Host "  detonating $($zips.Count) sample(s) through the VM in one batch..." -ForegroundColor Yellow
-        & $huntLoop -Vmx $Vmx -Snapshot $Snapshot -SampleDir $BatchDir `
-            -GuestUser $GuestUser -GuestPassword $GuestPassword -VmPassword $VmPassword `
-            -HostRunsDir $HostRunsDir
+        $hlArgs = @("-Vmx",$Vmx,"-Snapshot",$Snapshot,"-SampleDir",$BatchDir,
+                    "-GuestUser",$GuestUser,"-GuestPassword",$GuestPassword,
+                    "-VmPassword",$VmPassword,"-HostRunsDir",$HostRunsDir)
+        if ($Fast)   { $hlArgs += "-Fast" }
+        if ($Parallel -gt 1) { $hlArgs += @("-Parallel",$Parallel) }
+        & $huntLoop @hlArgs
         Write-Host "  round $round done - $($zips.Count) samples processed, Autopilot will publish strong findings" -ForegroundColor Green
     }
 

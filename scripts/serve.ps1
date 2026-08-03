@@ -26,8 +26,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $env:ARGUS_RUNS = $HostRunsDir
 New-Item -ItemType Directory -Force (Join-Path $HostRunsDir "review_queue") | Out-Null
 
+# Autopilot publishing on unless explicitly disabled — this is what turns an
+# overnight collection into a published malware feed (VT comment + site).
+if (-not $env:ARGUS_AUTOPUBLISH) { $env:ARGUS_AUTOPUBLISH = "1" }
+
 Write-Host "== ARGUS web console ==" -ForegroundColor Cyan
 Write-Host "  ARGUS_RUNS : $HostRunsDir  (reading the hunter's drafts)" -ForegroundColor DarkGray
+Write-Host "  Autopilot  : $(if($env:ARGUS_AUTOPUBLISH -eq '1'){'ON (auto-publish to VT+site)'}else{'OFF'})" -ForegroundColor DarkGray
 Write-Host "  panel      : http://127.0.0.1:$Port/panel"
 Write-Host "  pipeline   : http://127.0.0.1:$Port/pipeline"
 Write-Host "  reverser   : http://127.0.0.1:$Port/re"
